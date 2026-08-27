@@ -1,0 +1,14 @@
+{
+  "schema": "comsect1.project-plan.v1",
+  "profile": "ecosystem-reference",
+  "normative": false,
+  "defaults": {
+    "gate_after_mutation": true,
+    "temporary_root": "temps",
+    "quarantine_root": "trash"
+  },
+  "lifecycle": {
+    "existing_state_change": "plan-required",
+    "new_project": "direct"
+  }
+}

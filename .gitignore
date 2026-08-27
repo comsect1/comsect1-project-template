@@ -1,0 +1,5 @@
+# Project-local disposable state
+.verify/
+.memory/
+/90_temps/
+/99_trash/
