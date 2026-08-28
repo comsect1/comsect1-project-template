@@ -33,5 +33,9 @@ Comsect1 Gate afterward. `-Apply` is a byte-format correction only: it does not
 add files, stage changes, change Git configuration, or touch files marked
 `-text`.
 
+Strict UTF-8 validation rejects undecodable tracked text. `-Apply` never
+guesses or silently transcodes a source encoding; such a file requires an
+explicit reviewed conversion.
+
 Byte-addressed release payloads may be excluded only at their exact repository
 path. A broad source-tree exception is not permitted.

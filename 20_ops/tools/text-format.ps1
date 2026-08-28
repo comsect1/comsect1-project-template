@@ -23,12 +23,23 @@ function Get-NonCanonicalTrackedText {
         if ($attributes -notmatch '(^|\s)eol=lf($|\s)') {
             continue
         }
-        if ($workEnding -notin @('crlf', 'mixed', 'cr')) {
+        if ($workEnding -eq '-text') {
             continue
         }
-        [pscustomobject]@{
-            Ending = $workEnding.ToUpperInvariant()
-            Path = $relativePath
+        $path = [IO.Path]::GetFullPath((Join-Path $RepositoryRoot $relativePath))
+        $source = [IO.File]::ReadAllBytes($path)
+        try {
+            [void][Text.UTF8Encoding]::new($false, $true).GetString($source)
+        } catch {
+            [pscustomobject]@{ Problem = 'NON_UTF8'; Path = $relativePath }
+            continue
+        }
+        if ($workEnding -in @('crlf', 'mixed', 'cr')) {
+            [pscustomobject]@{ Problem = $workEnding.ToUpperInvariant(); Path = $relativePath }
+            continue
+        }
+        if ($source.Length -gt 0 -and $source[$source.Length - 1] -ne 10) {
+            [pscustomobject]@{ Problem = 'NO_FINAL_NEWLINE'; Path = $relativePath }
         }
     }
 }
@@ -62,6 +73,9 @@ function Convert-TrackedTextToLf {
                 $result.WriteByte($source[$index])
             }
         }
+        if ($result.Length -gt 0 -and $result.GetBuffer()[$result.Length - 1] -ne 10) {
+            $result.WriteByte(10)
+        }
         [IO.File]::WriteAllBytes($path, $result.ToArray())
     } finally {
         $result.Dispose()
@@ -81,19 +95,23 @@ if ($findings.Count -eq 0) {
 }
 
 if (-not $Apply) {
-    $findings | Format-Table Ending, Path -AutoSize
+    $findings | Format-Table Problem, Path -AutoSize
     Write-Error "text format: FAIL ($($findings.Count) tracked file(s)); rerun with -Apply to normalize"
     exit 1
 }
 
 foreach ($finding in $findings) {
+    if ($finding.Problem -eq 'NON_UTF8') {
+        Write-Warning "refusing to guess source encoding for $($finding.Path)"
+        continue
+    }
     Convert-TrackedTextToLf -RepositoryRoot $repositoryRoot -RelativePath $finding.Path
     Write-Host "normalized $($finding.Path)"
 }
 
 $remaining = @(Get-NonCanonicalTrackedText -RepositoryRoot $repositoryRoot)
 if ($remaining.Count -ne 0) {
-    $remaining | Format-Table Ending, Path -AutoSize
+    $remaining | Format-Table Problem, Path -AutoSize
     Write-Error "text format: FAIL ($($remaining.Count) tracked file(s) remain noncanonical)"
     exit 1
 }
