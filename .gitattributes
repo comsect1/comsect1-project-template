@@ -1,0 +1,14 @@
+# Repository-authored text has one cross-platform working-tree representation.
+* text=auto eol=lf
+
+# True binary artifacts are byte-preserved.
+*.7z -text
+*.dll -text
+*.exe -text
+*.gif -text
+*.ico -text
+*.jpeg -text
+*.jpg -text
+*.pdf -text
+*.png -text
+*.zip -text

@@ -33,6 +33,9 @@
   cleanup quarantine.
 - Language, compiler, package-manager, test-runner, and platform bindings must
   be defined by this fork's own instructions; do not present them as Spec law.
+- Repository-authored text follows [the text-format policy](./.instructions/text-format-policy.md).
+  Validate it with `20_ops/tools/text-format.ps1`; use its explicit `-Apply`
+  mode for an unstaged byte-format correction.
 
 ## Temporary-output mandate
 
@@ -57,3 +60,4 @@
 - [Fork adoption](./.instructions/fork-adoption.md)
 - [Licensing policy](./.instructions/licensing-policy.md)
 - [Refactoring and updates](./.instructions/refactoring-and-updates.md)
+- [Text format policy](./.instructions/text-format-policy.md)

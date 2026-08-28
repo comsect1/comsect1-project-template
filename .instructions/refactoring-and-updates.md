@@ -24,6 +24,8 @@ membership or category structure.
 3. Refactor the natural implementation layout inside `10_pkg/` and update only
    non-derivable Cell intent in `comsect1.json`.
 4. Verify behavior, dependency licenses, Cell structure, and relative paths.
+   Run `20_ops/tools/text-format.ps1` before Gate so working-tree byte drift is
+   reported independently of architecture findings.
 5. Record reviewed results in `20_ops/`; issue a package into `30_cert/` only
    through an authorized finalization step.
 6. Clean the exact task-owned run through `99_trash/`.

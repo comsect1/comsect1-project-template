@@ -10,5 +10,6 @@ Comsect1 Specification law.
 - [fork-adoption.md](./fork-adoption.md): mandatory fork identity and tailoring checklist
 - [licensing-policy.md](./licensing-policy.md): template, downstream, and third-party license boundaries
 - [refactoring-and-updates.md](./refactoring-and-updates.md): legacy retrofitting, path normalization, and refactoring
+- [text-format-policy.md](./text-format-policy.md): canonical text bytes, verification, and explicit automatic correction
 - [comsect1-cell-authoring.md](./comsect1-cell-authoring.md): self-contained Cell control, zone, role, classification, and prefix decisions
 - [templates/](./templates/): reusable work, readiness, issue, and cleanup records
