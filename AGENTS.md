@@ -34,6 +34,8 @@
 - Language, compiler, package-manager, test-runner, and platform bindings must
   be defined by this fork's own instructions; do not present them as Spec law.
 - Repository-authored text follows [the text-format policy](./.instructions/text-format-policy.md).
+  Validate it with `20_ops/tools/text-format.ps1`; use its explicit `-Apply`
+  mode for an unstaged byte-format correction.
 
 ## Version and compatibility invariants
 
@@ -52,8 +54,6 @@
   boundary owner, support scope, and retirement or continuation decision.
 - Apply the full [version and compatibility policy](./.instructions/version-and-compatibility.md)
   during design, refactoring, review, and release preparation.
-  Validate it with `20_ops/tools/text-format.ps1`; use its explicit `-Apply`
-  mode for an unstaged byte-format correction.
 
 ## Temporary-output mandate
 
