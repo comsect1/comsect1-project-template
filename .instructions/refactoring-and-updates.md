@@ -36,9 +36,13 @@ membership or category structure.
    and comments for history-driven version control. If approved post-release
    compatibility exists, confine it to the owned external boundary and record
    its support and retirement decision.
-5. Verify behavior, dependency licenses, Cell structure, and relative paths.
+5. Classify durable guidance discovered during the refactor as common, kind, or
+   local. Put project-specific guidance in `.instructions/local/`; do not turn a
+   work-order decision into permanent common guidance by copying it into root
+   instruction files or `AGENTS.md`.
+6. Verify behavior, dependency licenses, Cell structure, and relative paths.
    Run `20_ops/tools/text-format.ps1` before Gate so working-tree byte drift is
    reported independently of architecture findings.
-6. Record reviewed results in `20_ops/`; issue a package into `30_cert/` only
+7. Record reviewed results in `20_ops/`; issue a package into `30_cert/` only
    through an authorized finalization step.
-7. Clean the exact task-owned run through `99_trash/`.
+8. Clean the exact task-owned run through `99_trash/`.

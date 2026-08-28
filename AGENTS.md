@@ -55,6 +55,24 @@
 - Apply the full [version and compatibility policy](./.instructions/version-and-compatibility.md)
   during design, refactoring, review, and release preparation.
 
+## Instruction ownership and precedence
+
+- Root `.instructions/*.md` files supplied by this template are common
+  instructions. Template synchronization may update them.
+- `.instructions/kind/` is the fork-owned repository-kind layer. Classify the
+  repository during adoption and place durable instructions shared by that kind
+  there; template synchronization must not overwrite it.
+- `.instructions/local/` is the fork-owned repository-local layer. Put durable
+  project-specific constraints and operating guidance there, not inline history
+  in this file; template synchronization must never overwrite or delete it.
+- Task-only authority remains in `20_ops/` records and must not be promoted to a
+  durable instruction without review and classification.
+- Kind and local instructions may narrow or strengthen common rules but may not
+  weaken a common invariant, external contract, license boundary, or governing
+  specification. Resolve conflicts explicitly instead of relying on file order.
+- Apply the full [instruction layers policy](./.instructions/instruction-layers.md)
+  whenever instructions are created, promoted, refactored, or synchronized.
+
 ## Temporary-output mandate
 
 - Create every transient output below one exact task-owned
@@ -79,4 +97,7 @@
 - [Licensing policy](./.instructions/licensing-policy.md)
 - [Refactoring and updates](./.instructions/refactoring-and-updates.md)
 - [Version and compatibility](./.instructions/version-and-compatibility.md)
+- [Instruction layers](./.instructions/instruction-layers.md)
+- [Repository-kind instructions](./.instructions/kind/README.md)
+- [Repository-local instructions](./.instructions/local/README.md)
 - [Text format policy](./.instructions/text-format-policy.md)
