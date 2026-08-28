@@ -34,6 +34,24 @@
 - Language, compiler, package-manager, test-runner, and platform bindings must
   be defined by this fork's own instructions; do not present them as Spec law.
 - Repository-authored text follows [the text-format policy](./.instructions/text-format-policy.md).
+
+## Version and compatibility invariants
+
+- Source, configuration, schemas, paths, identifiers, and runtime behavior must
+  describe the current product state. Do not use arbitrary version, revision,
+  `legacy`, `old`, `v1`/`v2`, or similar history labels as control axes.
+- An `r{n}` work revision is non-normative traceability only. It may appear in a
+  work record or transient comment, but never in code, macros, feature flags,
+  paths, schemas, package names, persisted formats, or behavior selection.
+- Before an authorized public release creates a real compatibility obligation,
+  replace superseded implementation completely. Do not add seams, shims,
+  adapters, aliases, wrappers, dual paths, or migration branches for temporary,
+  test-only, or unreleased behavior.
+- Official release versions are allowed only at an explicit release authority.
+  Post-release compatibility requires an identified external contract, approval,
+  boundary owner, support scope, and retirement or continuation decision.
+- Apply the full [version and compatibility policy](./.instructions/version-and-compatibility.md)
+  during design, refactoring, review, and release preparation.
   Validate it with `20_ops/tools/text-format.ps1`; use its explicit `-Apply`
   mode for an unstaged byte-format correction.
 
@@ -60,4 +78,5 @@
 - [Fork adoption](./.instructions/fork-adoption.md)
 - [Licensing policy](./.instructions/licensing-policy.md)
 - [Refactoring and updates](./.instructions/refactoring-and-updates.md)
+- [Version and compatibility](./.instructions/version-and-compatibility.md)
 - [Text format policy](./.instructions/text-format-policy.md)
