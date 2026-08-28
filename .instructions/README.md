@@ -9,7 +9,7 @@ Comsect1 Specification law.
 - [temporary-output-and-cleanup.md](./temporary-output-and-cleanup.md): disposable output safety boundary
 - [fork-adoption.md](./fork-adoption.md): mandatory fork identity and tailoring checklist
 - [licensing-policy.md](./licensing-policy.md): template, downstream, and third-party license boundaries
-- [refactoring-and-updates.md](./refactoring-and-updates.md): legacy retrofitting, path normalization, and refactoring
+- [refactoring-and-updates.md](./refactoring-and-updates.md): current-state replacement, path normalization, and refactoring
 - [version-and-compatibility.md](./version-and-compatibility.md): release authority, non-semantic work revisions, and compatibility boundaries
 - [text-format-policy.md](./text-format-policy.md): canonical text bytes, verification, and explicit automatic correction
 - [comsect1-cell-authoring.md](./comsect1-cell-authoring.md): self-contained Cell control, zone, role, classification, and prefix decisions
