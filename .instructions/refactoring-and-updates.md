@@ -28,21 +28,29 @@ membership or category structure.
    replacement, not compatibility work.
 2. Freeze the current baseline and run existing verification under
    `90_temps/verification/<run-id>/`.
-3. Refactor the natural implementation layout inside `10_pkg/`, remove the
+3. Before semantic edits, derive the Cell's public meaning and state flow,
+   semantic owner map, expected role graph and exact SOURCE lineage, external
+   effect boundaries, public identities, and acceptance checks. Keep this
+   transient design evidence outside every Cell.
+4. Refactor the natural implementation layout inside `10_pkg/`, remove the
    superseded implementation, and update tests, fixtures, build inputs, and
    documentation to the single current state. Update only non-derivable Cell
    intent in `comsect1.json`.
-4. Audit identifiers, macros, flags, aliases, paths, schemas, persisted formats,
+5. Audit identifiers, macros, flags, aliases, paths, schemas, persisted formats,
    and comments for history-driven version control. If approved post-release
    compatibility exists, confine it to the owned external boundary and record
    its support and retirement decision.
-5. Classify durable guidance discovered during the refactor as common, kind, or
+6. Classify durable guidance discovered during the refactor as common, kind, or
    local. Put project-specific guidance in `.instructions/local/`; do not turn a
    work-order decision into permanent common guidance by copying it into root
    instruction files or `AGENTS.md`.
-6. Verify behavior, dependency licenses, Cell structure, and relative paths.
+7. Verify behavior, dependency licenses, Cell structure, relative paths, the
+   original Gate pack, the complete Cell Gate, and affected direct consumers.
+   A lower finding count with a changed finding class or a new unresolved,
+   lineage, role-direction, effect-ownership, or forwarding-seam defect is not
+   completion.
    Run `20_ops/tools/text-format.ps1` before Gate so working-tree byte drift is
    reported independently of architecture findings.
-7. Record reviewed results in `20_ops/`; issue a package into `30_cert/` only
+8. Record reviewed results in `20_ops/`; issue a package into `30_cert/` only
    through an authorized finalization step.
-8. Clean the exact task-owned run through `99_trash/`.
+9. Clean the exact task-owned run through `99_trash/`.

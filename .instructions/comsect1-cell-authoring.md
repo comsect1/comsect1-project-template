@@ -26,28 +26,27 @@ Product-owned JSON contracts and runtime configuration remain ordinary product
 artifacts; this rule forbids additional Comsect1 control surfaces, not JSON as
 a medium.
 
-## Gate and Forge execution records
+## Gate and Forge execution
 
-- Gate discovers Cells from local `comsect1.json` files, fixes the complete
-  ordered target inventory and its canonical hash, and derives each Cell's
-  governed file view from that manifest plus its immutable tree at runtime.
-- Put `--run-dir` outside every inspected repository and use `action events
-  <id> --run-dir <dir> --follow` for asynchronous progress. Progress records
-  identify bounded work items and counters; they are not findings or authority.
-- A discovery result is issue-oriented: retain Cells with a diagnostic or a
-  non-PASS verdict, correction/review candidates, and summary counts. Do not
-  copy successful full evidence into logs or invent a cache, sidecar, or local
-  metadata file to remember the scan.
-- Forge may plan only from the structured, snapshot-bound Gate correction
-  authority supplied to it. Its plan inventory and journaled apply operations
-  use the same bounded progress pattern; a progress event never grants repair
-  authority or implies that a subsequent Gate rerun passed.
+- Gate is read-only. At runtime it derives each declared Cell's governed
+  inventory from the local `comsect1.json` and immutable tree, then emits a
+  concise, issue-oriented result: diagnostics or non-PASS Cells,
+  correction/review candidates, and summary counts. Do not copy successful
+  full evidence into logs or invent a cache, sidecar, or local metadata file
+  to remember a scan.
+- `--events` emits bounded transient item progress on standard error. It
+  creates no lifecycle, action, approval, or run state.
+- Forge may plan only from structured, snapshot-bound Gate mechanical
+  authority. Its bounded progress never grants repair authority; a
+  same-criteria Gate reassessment decides the resulting Cell verdict.
 
 ## Three independent decisions
 
 Choose a zone, a semantic role when applicable, and a classification in that
 order. They are separate axes. A prefix never creates authority, a dependency,
-an access exception, or a call hierarchy.
+an access exception, or a call hierarchy. When a parser-proven governed
+role-to-role consumption edge exists, it may remain within one role or move
+only `src_ -> med_ -> rea_`; reverse consumption is forbidden.
 
 | Zone | Admitted prefixes | Responsibility |
 |---|---|---|
@@ -126,3 +125,28 @@ A meaningful `src_controller` that decides retry policy may call a replaceable
 leaving a forwarding SOURCE is invalid. A `med_controller_frame` is justified
 only when it maps a named controller representation to a named frame
 representation without choosing retry or transport behavior.
+
+## Design-before-edit refactoring closure
+
+Before a semantic Cell refactor, derive these work products outside the Cell
+from its public contract, relevant specification, governed tree, and baseline
+Gate evidence:
+
+1. public meaning, state flow, behavior invariants, and external effects;
+2. the semantic owner map across Core roles and truthful role-less seams;
+3. the expected governed dependency graph and exact SOURCE-stem lineage;
+4. external isolation boundaries and public identity surfaces; and
+5. behavior, role-pack, complete Cell, and direct-consumer acceptance checks.
+
+Complete this design before moving implementation. Gate confirms the resulting
+AST-observed structure; a lower finding count does not substitute for the
+design. Treat any changed finding class, new unresolved observation, missing
+SOURCE lineage, SOURCE-owned effect, MEDIATION-owned policy, reverse
+REALIZATION consumption, active contract, internal membrane acquisition, or
+forwarding seam as an incomplete refactor.
+
+After editing, run behavior verification, the Gate pack that exposed the
+issue, the complete Cell Gate, and affected direct-consumer tests. Keep the
+derived maps and transient evidence in the task-owned run outside every Cell;
+do not turn them into another control file or persist derived relations in
+`comsect1.json`.
