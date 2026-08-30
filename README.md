@@ -14,6 +14,27 @@ publication remains authoritative for that Cell.
 
 After a fork, complete `.instructions/fork-adoption.md` before implementation.
 
+## Gate-to-Forge execution kernel
+
+```text
+Cell root and comsect1.json
+-> complete immutable runtime inventory
+-> language AST and binding
+-> normalized proven observations
+-> current Gate issues with exact AUTO_FIX candidates and direct rework IDs
+-> selected AUTO_FIX: ephemeral exact plan -> apply -> same-Gate result
+-> no selected mutation: initial Gate result remains current
+-> current direct REWORK IDs labeled by --ai-rework on|off
+```
+
+For each locally declared Cell, run `comsect1-gate check --root <cell>`. Gate
+and Audit are read-only and persist only caller-selected external issue output.
+Run `comsect1-forge fix --root <cell> --ai-rework <on|off>` when Gate identifies
+the correction flow. Forge applies exact mechanical candidates without
+approval, reruns the same Gate, and labels only the remaining direct rework IDs;
+it never launches AI. Unit roots remain `10_pkg/`, `20_ops/`, `30_cert/`,
+`90_temps/`, and `99_trash/`; umbrella classification groups do not apply.
+
 ---
 
 ## Author & Architecture Governance
