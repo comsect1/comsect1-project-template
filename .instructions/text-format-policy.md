@@ -9,8 +9,8 @@
   newline. True binary artifacts are marked `-text` and remain byte-preserved.
 - `.editorconfig` aligns supporting editors with the Git policy. Language
   formatters and generators added by a fork must be configured to emit LF.
-- Do not introduce extension-specific CRLF exceptions inside a Cell. Gate
-  judges the observed bytes of all governed text in that Cell together.
+- Do not introduce extension-specific CRLF exceptions inside a Cell. Structural
+  verification judges the observed bytes of all governed text together.
 
 ## Verification and correction
 
@@ -28,8 +28,8 @@ staging them, run:
 pwsh -File 20_ops/tools/text-format.ps1 -Apply
 ```
 
-Review the resulting diff and run the normal repository verification and
-Comsect1 Gate afterward. `-Apply` is a byte-format correction only: it does not
+Review the resulting diff and run the normal repository verification afterward.
+`-Apply` is a byte-format correction only: it does not
 add files, stage changes, change Git configuration, or touch files marked
 `-text`.
 

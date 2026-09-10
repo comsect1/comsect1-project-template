@@ -19,26 +19,12 @@ Do not create or update any of the following:
   comments; or
 - a language-specific Cell control file beside `comsect1.json`.
 
-Gate may inspect the actual governed files as its subject. Its language rules
-and profiles belong to the installed tool, and its derived inventory,
-projection, observations, findings, and evidence belong outside the Cell.
+Structural verification may inspect the actual governed files as its subject.
+Derived inventories, projections, observations, findings, and evidence belong
+outside the Cell.
 Product-owned JSON contracts and runtime configuration remain ordinary product
 artifacts; this rule forbids additional Comsect1 control surfaces, not JSON as
 a medium.
-
-## Gate and Forge execution
-
-- Gate is read-only. At runtime it derives each declared Cell's governed
-  inventory from the local `comsect1.json` and immutable tree, then emits a
-  concise, issue-oriented result: diagnostics or non-PASS Cells,
-  correction/review candidates, and summary counts. Do not copy successful
-  full evidence into logs or invent a cache, sidecar, or local metadata file
-  to remember a scan.
-- `--events` emits bounded transient item progress on standard error. It
-  creates no lifecycle, action, approval, or run state.
-- Forge may plan only from structured, snapshot-bound Gate mechanical
-  authority. Its bounded progress never grants repair authority; a
-  same-criteria Gate reassessment decides the resulting Cell verdict.
 
 ## Three independent decisions
 
@@ -144,7 +130,7 @@ representation without choosing retry or transport behavior.
 
 Before a semantic Cell refactor, derive these work products outside the Cell
 from its public contract, relevant specification, governed tree, and baseline
-Gate evidence:
+structural evidence:
 
 1. public meaning, state flow, behavior invariants, and external effects;
 2. the semantic owner map across Core roles and truthful role-less seams;
@@ -152,15 +138,15 @@ Gate evidence:
 4. external isolation boundaries and public identity surfaces; and
 5. behavior, role-pack, complete Cell, and direct-consumer acceptance checks.
 
-Complete this design before moving implementation. Gate confirms the resulting
-AST-observed structure; a lower finding count does not substitute for the
-design. Treat any changed finding class, new unresolved observation, missing
+Complete this design before moving implementation. Structural analysis confirms
+the resulting observed structure; a lower finding count does not substitute for
+the design. Treat any changed finding class, new unresolved observation, missing
 SOURCE lineage, SOURCE-owned effect, MEDIATION-owned policy, reverse
 REALIZATION consumption, active contract, internal membrane acquisition, or
 forwarding seam as an incomplete refactor.
 
-After editing, run behavior verification, the Gate pack that exposed the
-issue, the complete Cell Gate, and affected direct-consumer tests. Keep the
-derived maps and transient evidence in the task-owned run outside every Cell;
-do not turn them into another control file or persist derived relations in
-`comsect1.json`.
+After editing, run behavior verification, the structural checks that exposed
+the issue, complete Cell structural verification, and affected direct-consumer
+tests. Keep the derived maps and transient evidence in the task-owned run
+outside every Cell; do not turn them into another control file or persist
+derived relations in `comsect1.json`.

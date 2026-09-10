@@ -22,6 +22,6 @@ Complete this checklist in the fork's first change:
    `comsect1.json`.
 10. Retain the root `.gitattributes` and `.editorconfig`, configure every added
    formatter or generator to emit LF, and run
-   `20_ops/tools/text-format.ps1 -Apply` once before the fork's first Gate.
+   `20_ops/tools/text-format.ps1 -Apply` once before structural verification.
 11. Confirm future template synchronization is configured to update common
     files while preserving `.instructions/kind/` and `.instructions/local/`.

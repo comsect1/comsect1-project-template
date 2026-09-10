@@ -45,12 +45,12 @@ membership or category structure.
    work-order decision into permanent common guidance by copying it into root
    instruction files or `AGENTS.md`.
 7. Verify behavior, dependency licenses, Cell structure, relative paths, the
-   original Gate pack, the complete Cell Gate, and affected direct consumers.
+   original structural checks, the complete Cell, and affected direct consumers.
    A lower finding count with a changed finding class or a new unresolved,
    lineage, role-direction, effect-ownership, or forwarding-seam defect is not
    completion.
-   Run `20_ops/tools/text-format.ps1` before Gate so working-tree byte drift is
-   reported independently of architecture findings.
+   Run `20_ops/tools/text-format.ps1` before structural verification so
+   working-tree byte drift is reported independently of architecture findings.
 8. Record reviewed results in `20_ops/`; issue a package into `30_cert/` only
    through an authorized finalization step.
 9. Clean the exact task-owned run through `99_trash/`.
