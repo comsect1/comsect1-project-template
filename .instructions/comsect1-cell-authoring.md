@@ -58,7 +58,9 @@ only `src_ -> med_ -> rea_`; reverse consumption is forbidden.
 | `capability/` | `svc_`, `mdw_`, `hal_`, `bsp_` | Role-less service, pipeline, and hardware facilities |
 
 All four zone directories exist at the Cell root. A Cell does not gain another
-zone from a language, framework, package layout, or prefix.
+zone from a language, framework, package layout, or prefix. Their physical
+presence is placement capacity only; an empty zone or a retained `.gitkeep`
+does not establish that the zone's responsibility has been implemented.
 
 ## Core role families
 
@@ -98,6 +100,16 @@ call.
 - `cfg_` and `db_` are governed material, not disguised SOURCE owners.
 - `stm_`, `svc_`, `mdw_`, `hal_`, and `bsp_` are classifications, not roles.
   They do not form a promotion ladder or imply allowed dependency directions.
+- A capability supplies a mechanism whose decisions remain owned by Core. A
+  `svc_` artifact must not be the sole meaningful implementation behind a
+  public API, or own domain algorithms, protocol interpretation, validation
+  policy, defaults, state-transition rules, or orchestration choices.
+- Every executable Cell that exposes meaningful behavior has at least one
+  implemented feature root in `core/` with a truthful `src_` semantic owner.
+  A passive identity or data-only Cell may have no executable Core behavior;
+  it must not hide executable meaning in `capability/` to claim that exception.
+- `core/.gitkeep` beside behavior implemented only by `svc_` is an invalid
+  classification, not a complete four-zone design.
 - A cross-feature interaction uses a role-less seam selected by meaning:
   shared state through `stm_`, shared shapes through `contract_`, explicit
   composition through a Core composition table, and an independently justified
@@ -116,8 +128,10 @@ Before creating, moving, or renaming an artifact:
 5. Add `rea_` only for an effect whose policy remains in the sibling `src_`.
 6. Otherwise select the truthful role-less surface; do not invent a SOURCE to
    justify a prefix.
-7. Record only non-derivable intent in `comsect1.json`.
-8. Reject a change that merely relabels, re-exports, forwards, or moves an edge
+7. For an executable Cell, confirm that every meaningful public behavior maps
+   to a Core feature and its `src_` owner; reject a capability-only engine.
+8. Record only non-derivable intent in `comsect1.json`.
+9. Reject a change that merely relabels, re-exports, forwards, or moves an edge
    to silence a finding.
 
 A meaningful `src_controller` that decides retry policy may call a replaceable
