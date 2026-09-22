@@ -30,9 +30,11 @@ a medium.
 
 Choose a zone, a semantic role when applicable, and a classification in that
 order. They are separate axes. A prefix never creates authority, a dependency,
-an access exception, or a call hierarchy. When a parser-proven governed
-role-to-role consumption edge exists, it may remain within one role or move
-only `src_ -> med_ -> rea_`; reverse consumption is forbidden.
+an access exception, or a call hierarchy. A prefix is an export origin tag: it
+records the file that declares an externally linked name, so an
+internal-linkage name, such as a C `static`, carries none. When a parser-proven
+governed role-to-role consumption edge exists, it may remain within one role or
+move only `src_ -> med_ -> rea_`; reverse consumption is forbidden.
 
 | Zone | Admitted prefixes | Responsibility |
 |---|---|---|
@@ -81,6 +83,14 @@ call.
 
 - `contract_` is passive. Executable behavior, mutable state, orchestration,
   and policy do not belong in `contract/`.
+- An operation the Cell requires but does not define is declared in that Cell's
+  own `contract/`, never in a header outside the Cell. Such a required
+  operation exposes and implements nothing, so the contract stays passive. The
+  environment supplies the definition under exactly the declared name, and the
+  link is the completeness guarantee. When the provider is itself a Cell, that
+  provider Cell's own structural verification judges its definition; the
+  requiring Cell does not. The governing Comsect1 Specification's language
+  projection profile states the admission conditions.
 - `api_` is exclusively outward-facing. A Cell's own Core and capabilities do
   not call its membrane as an internal acquisition path.
 - `cfg_` and `db_` are governed material, not disguised SOURCE owners.
