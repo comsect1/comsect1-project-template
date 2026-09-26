@@ -26,8 +26,9 @@ membership or category structure.
 1. Record scope and behavior invariants in `20_ops/04-work_orders/`. Identify
    any authorized released external contract; absence means current-state
    replacement, not compatibility work.
-2. Freeze the current baseline and run existing verification under
-   `90_temps/verification/<run-id>/`.
+2. Identify the affected units and use the fork's fast development-feedback
+   operation while editing. Do not create a clean-room verification run merely
+   to begin ordinary implementation.
 3. Before semantic edits, derive the Cell's public meaning and state flow,
    semantic owner map, expected role graph and exact SOURCE lineage, external
    effect boundaries, public identities, and acceptance checks. Keep this
@@ -44,13 +45,13 @@ membership or category structure.
    local. Put project-specific guidance in `.instructions/local/`; do not turn a
    work-order decision into permanent common guidance by copying it into root
    instruction files or `AGENTS.md`.
-7. Verify behavior, dependency licenses, Cell structure, relative paths, the
-   original structural checks, the complete Cell, and affected direct consumers.
-   A lower finding count with a changed finding class or a new unresolved,
-   lineage, role-direction, effect-ownership, or forwarding-seam defect is not
-   completion.
-   Run `20_ops/tools/text-format.ps1` before structural verification so
-   working-tree byte drift is reported independently of architecture findings.
+7. At a release candidate, verify behavior, dependency licenses, Cell
+   structure, relative paths, the original structural checks, complete Cell verification,
+   and affected direct consumers in the candidate's fresh run. A lower finding
+   count with a changed finding class or a new unresolved, lineage,
+   role-direction, effect-ownership, or forwarding-seam defect is not
+   completion. Run `20_ops/tools/text-format.ps1` before structural verification so working-tree
+   byte drift is reported independently of architecture findings.
 8. Record reviewed results in `20_ops/`; issue a package into `30_cert/` only
    through an authorized finalization step.
 9. Clean the exact task-owned run through `99_trash/`.

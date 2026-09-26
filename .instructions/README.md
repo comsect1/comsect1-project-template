@@ -6,6 +6,7 @@ Comsect1 Specification law.
 
 - `artifact-placement.md`: authored, process, evidence, and credential paths
 - `lifecycle-and-traceability.md`: continuous development and V&V flow
+- [development-feedback-and-release-evidence.md](./development-feedback-and-release-evidence.md): fast feedback, release-only evidence, and disposable cache boundary
 - [temporary-output-and-cleanup.md](./temporary-output-and-cleanup.md): disposable output safety boundary
 - [fork-adoption.md](./fork-adoption.md): mandatory fork identity and tailoring checklist
 - [licensing-policy.md](./licensing-policy.md): template, downstream, and third-party license boundaries

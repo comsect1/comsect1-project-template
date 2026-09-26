@@ -3,3 +3,17 @@
 .memory/
 /90_temps/
 /99_trash/
+
+# Build artifacts and leaked objects
+*.o
+*.obj
+*.a
+*.lib
+*.exe
+*.bin
+*.ilk
+*.pdb
+
+# Ad-hoc debug directories and scratch scripts
+_*
+

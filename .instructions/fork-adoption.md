@@ -14,7 +14,10 @@ Complete this checklist in the fork's first change:
    project-specific guidance in `.instructions/local/`; index every local file
    from `.instructions/local/README.md`.
 6. Add language and tool output bindings to the `kind` or `local` layer that
-   owns them. Do not add them to template-managed common files.
+   owns them. Bind the common development-feedback policy to the language's
+   quickest feedback operation, affected-unit selection, reusable development
+   cache path, and release-candidate command set. Do not add those bindings to
+   template-managed common files.
 7. Keep the complete folder scaffold; remove a `.gitkeep` only when real
    governed content replaces it.
 8. Confirm `90_temps/` and `99_trash/` remain ignored except for placeholders.

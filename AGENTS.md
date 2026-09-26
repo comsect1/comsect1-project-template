@@ -31,7 +31,8 @@
   issued, immutable final credential packages.
 - `90_temps/` is the only disposable generation root. `99_trash/` is the only
   cleanup quarantine.
-- Language, compiler, package-manager, test-runner, and platform bindings must
+- Apply the common [development feedback and release evidence policy](./.instructions/development-feedback-and-release-evidence.md).
+  Language, compiler, package-manager, test-runner, and platform bindings must
   be defined by this fork's own instructions; do not present them as Spec law.
 - Repository-authored text follows [the text-format policy](./.instructions/text-format-policy.md).
   Validate it with `20_ops/tools/text-format.ps1`; use its explicit `-Apply`
@@ -76,7 +77,9 @@
 ## Temporary-output mandate
 
 - Create every transient output below one exact task-owned
-  `90_temps/<class>/<tool-or-purpose>/<run-id>/` directory.
+  `90_temps/<class>/<tool-or-purpose>/<run-id>/` directory. The sole exception
+  is the explicitly named reusable development cache defined by the common
+  development-feedback policy and the fork's language-specific instructions.
 - A task is incomplete while its owned temporary output remains.
 - Promote only compact reviewed records to `20_ops/`; issue material into `30_cert/`
   only through an authorized finalization step.
@@ -87,11 +90,25 @@
   repository root, a workspace root, a Cell root, or an unresolved path.
 - Never delete unknown, shared, dirty, or another task's output.
 
+## Strict Prohibitions
+
+- **NO ROOT BUILDS OR OBJECT LEAKS**: Never invoke compilation or build tools
+  at the project root. All intermediate build outputs (`*.o`, `*.obj`, `*.ilk`,
+  `*.pdb`, `_build/`, etc.) must target designated paths within `90_temps/build/`
+  or explicit build directories, never the project root or source trees.
+- **NO WORKTREES OR CLONES INSIDE PROJECT**: Never spawn `git worktree add` or
+  nested `git clone` inside this repository. Isolated exploration workspaces
+  belong in external directories outside the project and repos hierarchy.
+- **NO ROOT TEMPORARY SCRIPTS OR AD-HOC DUMPS**: Never deposit scratch scripts
+  (`*.ps1`, `*.sh`), one-off test harnesses, or debug text dumps in the project
+  root. Use `90_temps/scratch/<tool>/<run-id>/` for transient scripts.
+
 ## Routed instructions
 
 - [Instruction index](./.instructions/README.md)
 - [Artifact placement](./.instructions/artifact-placement.md)
 - [Lifecycle and traceability](./.instructions/lifecycle-and-traceability.md)
+- [Development feedback and release evidence](./.instructions/development-feedback-and-release-evidence.md)
 - [Temporary output and cleanup](./.instructions/temporary-output-and-cleanup.md)
 - [Fork adoption](./.instructions/fork-adoption.md)
 - [Licensing policy](./.instructions/licensing-policy.md)
