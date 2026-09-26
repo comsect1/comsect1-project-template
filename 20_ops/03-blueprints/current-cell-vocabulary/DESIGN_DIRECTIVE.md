@@ -9,11 +9,9 @@ into the templates, and the Comsect1 Specification at `comsect1-architecture`
 ## Direction
 
 A repository created from this template starts on the current Comsect1 prefix
-vocabulary and laws. The template's common Cell authoring model still
-describes the retired vocabulary; its full replacement is the pending work
-package `20_ops/04-work_orders/current-cell-vocabulary/WORK_PACKAGE.md`. Until
-that package closes, the governing Specification prevails wherever the common
-copy differs, as `instruction-layers.md` already requires.
+vocabulary and laws. The common Cell authoring model states them; work package
+`20_ops/04-work_orders/current-cell-vocabulary/WORK_PACKAGE.md` carried the
+replacement.
 
 ## Prefix vocabulary
 
@@ -52,7 +50,6 @@ hardware facility; otherwise it is the feature's own `rmp_` or `efx_`.
 
 ## Boundary
 
-This directive states direction only. It does not edit the common instruction
-files, so template synchronization never carries a partial vocabulary rewrite
-to forks. Product-level layering rules belong to the template or fork that owns
+Template synchronization carries the complete common authoring model, never a
+partial vocabulary rewrite. Product-level layering rules belong to the template or fork that owns
 that product domain, not to this vendor-neutral scaffold.

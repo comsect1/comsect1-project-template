@@ -30,9 +30,9 @@ membership or category structure.
    operation while editing. Do not create a clean-room verification run merely
    to begin ordinary implementation.
 3. Before semantic edits, derive the Cell's public meaning and state flow,
-   semantic owner map, expected role graph and exact SOURCE lineage, external
-   effect boundaries, public identities, and acceptance checks. Keep this
-   transient design evidence outside every Cell.
+   semantic owner map, expected role graph and exact semantic-owner lineage,
+   external effect boundaries, public identities, and acceptance checks. Keep
+   this transient design evidence outside every Cell.
 4. Refactor the natural implementation layout inside `10_pkg/`, remove the
    superseded implementation, and update tests, fixtures, build inputs, and
    documentation to the single current state. Update only non-derivable Cell

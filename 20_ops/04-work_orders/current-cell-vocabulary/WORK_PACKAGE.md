@@ -1,6 +1,6 @@
 # Work Package: Current Cell vocabulary synchronization
 
-Status: `draft`
+Status: `done`
 Work package ID: `current-cell-vocabulary`
 Owner: `comsect1`
 Owned paths: `.instructions/comsect1-cell-authoring.md`, `.instructions/refactoring-and-updates.md`, `.instructions/README.md`, `AGENTS.md` Cell authoring section
@@ -17,3 +17,16 @@ This package is prerequisite P3 of the Comsect1 Architecture work order
 as one complete replacement, after the uncommitted instruction edits found in
 this template's main working tree on 2026-09-26 are resolved by their owner
 (prerequisite P4).
+
+## Result (2026-09-26)
+
+`.instructions/comsect1-cell-authoring.md` is replaced as one piece by the
+Specification's authoring model at `comsect1-architecture` `5d4dd65`. That
+model includes the prohibited-stem rule, the adopted-library law, required
+operations and the design-before-edit closure. It is written in this public
+template's tool-neutral wording: structural verification and analysis, with
+no internal tool names or execution section. `refactoring-and-updates.md`
+names semantic-owner lineage. A retired-prefix search over `.instructions/`,
+`AGENTS.md` and `README.md` finds only the prohibited-stem statement, which
+is the rule itself. `20_ops/tools/text-format.ps1` passes. P4 was resolved by
+committing the pending edits (`40b540b`).
