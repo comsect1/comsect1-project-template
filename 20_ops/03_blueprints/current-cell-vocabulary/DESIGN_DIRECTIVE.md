@@ -10,7 +10,7 @@ into the templates, and the Comsect1 Specification at `comsect1-architecture`
 
 A repository created from this template starts on the current Comsect1 prefix
 vocabulary and laws. The common Cell authoring model states them; work package
-`20_ops/04-work_orders/current-cell-vocabulary/WORK_PACKAGE.md` carried the
+`20_ops/04_work_orders/current-cell-vocabulary/WORK_PACKAGE.md` carried the
 replacement.
 
 ## Prefix vocabulary

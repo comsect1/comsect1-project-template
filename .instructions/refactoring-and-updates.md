@@ -6,7 +6,7 @@ membership or category structure.
 ## Invariants
 
 - Preserve external behavior unless an authorized decision in
-  `20_ops/03-blueprints/` changes it.
+  `20_ops/03_blueprints/` changes it.
 - Preserve only an identified external contract. Unreleased, temporary, and
   test-only behavior has no compatibility claim and must not justify a seam,
   shim, adapter, alias, wrapper, dual implementation, or migration branch.
@@ -23,7 +23,7 @@ membership or category structure.
 
 ## Refactoring sequence
 
-1. Record scope and behavior invariants in `20_ops/04-work_orders/`. Identify
+1. Record scope and behavior invariants in `20_ops/04_work_orders/`. Identify
    any authorized released external contract; absence means current-state
    replacement, not compatibility work.
 2. Identify the affected units and use the fork's fast development-feedback

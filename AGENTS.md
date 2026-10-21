@@ -24,10 +24,10 @@
   that are not yet populated.
 - `10_pkg/` owns authored implementation, executable test source, fixtures, and
   build-consumed inputs.
-- `20_ops/01-inputs/` through `20_ops/10-release/` own one continuous preparation,
+- `20_ops/01_inputs/` through `20_ops/10_release/` own one continuous preparation,
   development, verification, validation, traceability, assurance, and release
   process.
-- `30_cert/01-verification/` through `30_cert/04-release/` contain only explicitly
+- `30_cert/01_verification/` through `30_cert/04_release/` contain only explicitly
   issued, immutable final credential packages.
 - `90_temps/` is the only disposable generation root. `99_trash/` is the only
   cleanup quarantine.
@@ -118,3 +118,4 @@
 - [Repository-kind instructions](./.instructions/kind/README.md)
 - [Repository-local instructions](./.instructions/local/README.md)
 - [Text format policy](./.instructions/text-format-policy.md)
+- [Runtime location and environment policy](./.instructions/runtime-location-and-environment.md)
