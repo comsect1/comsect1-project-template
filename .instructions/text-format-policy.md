@@ -16,24 +16,24 @@
 
 Run the repository tool from any directory inside the worktree:
 
-```powershell
-pwsh -File 20_ops/tools/text-format.ps1
+```text
+python -I -B 20_ops/tools/text_format.py
 ```
 
 The check is read-only and exits nonzero when a tracked text file governed by
 the LF attribute is CRLF or mixed. To rewrite only those tracked files without
 staging them, run:
 
-```powershell
-pwsh -File 20_ops/tools/text-format.ps1 -Apply
+```text
+python -I -B 20_ops/tools/text_format.py --apply
 ```
 
 Review the resulting diff and run the normal repository verification afterward.
-`-Apply` is a byte-format correction only: it does not
+`--apply` is a byte-format correction only: it does not
 add files, stage changes, change Git configuration, or touch files marked
 `-text`.
 
-Strict UTF-8 validation rejects undecodable tracked text. `-Apply` never
+Strict UTF-8 validation rejects undecodable tracked text. `--apply` never
 guesses or silently transcodes a source encoding; such a file requires an
 explicit reviewed conversion.
 

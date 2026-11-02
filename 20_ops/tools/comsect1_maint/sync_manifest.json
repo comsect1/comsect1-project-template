@@ -11,7 +11,7 @@
     "comsect1_maint/path_guard.py": "d95bd47590e4f32bc867cc06a2f38e265fb3ea6558303ebbce90d7680ccde07a",
     "comsect1_maint/process.py": "0f34712d02be02cfa40ab2a967feacc60aec16614b5a9fb4704b2d37ab80cb11",
     "comsect1_maint/registry.py": "b23b718c84bd8a254e13043a6a8eaf03e475fb375b265c5d4bf4296dc7f98552",
-    "comsect1_maint/sync.py": "6495cd4ddf87fac0cdb408ee4d17785a15d767e81dd152c9e6beecb08a3a6da7",
+    "comsect1_maint/sync.py": "ef1fea49515e2777094171b0c8392f4e6d04fd78d11e5c69ac9aec67e8b77156",
     "comsect1_maint/test/fixtures/config/dcb.json": "132d0cc275050f7943cbfcf639a2e6f01f0186205f635a16f448f8d6382e4bec",
     "comsect1_maint/test/fixtures/config/hsb.json": "e52ca6b94e7858c4d3e6a8ebf950bdacbfc4166cbbdbf0b5dfcdc07438bddc44",
     "comsect1_maint/test/fixtures/config/sunset.json": "1ae0672cf00fb48dfddef8d2026f36746977ed0ec172abe88b30e134b933d962",
@@ -35,7 +35,7 @@
     "cross_build.py": "ec42e821a6d97569e609d8ba1818f7e5ac5856b4c4285c8cfbefa518489f723f",
     "gate.py": "2dca8e2f9c63bbae9ec49fdd78d7dd9acc66c99d2f7214190a822c55ea93c1d2",
     "native_gate.py": "1f54fb2f239518204de3c35740694467479879505643482882383d5151a6ff44",
-    "text-format.ps1": "2670cb0d742b8d7824b9e0a4a0f6d567c6fb5f4df2310fe9734895e39926f444"
+    "text_format.py": "0d306a71a511c3b8ed57304cceada8f0f3ca6fa3d313297cda90da122d46938f"
   },
   "schema": "comsect1.maint_sync_manifest.v1"
 }

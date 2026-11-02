@@ -35,7 +35,7 @@
   Language, compiler, package-manager, test-runner, and platform bindings must
   be defined by this repository's own instructions; do not present them as Spec law.
 - Repository-authored text follows [the text-format policy](./.instructions/text-format-policy.md).
-  Validate it with `20_ops/tools/text-format.ps1`; use its explicit `-Apply`
+  Validate it with `python -I -B 20_ops/tools/text_format.py`; use its explicit `--apply`
   mode for an unstaged byte-format correction.
 
 ## Version and compatibility invariants

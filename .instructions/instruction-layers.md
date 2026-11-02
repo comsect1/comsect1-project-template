@@ -61,7 +61,7 @@ The common layer also holds executable content: the maintainer tool package
 `20_ops/tools/comsect1_maint/**` (its tests included), the entry shims
 `20_ops/tools/native_gate.py`, `cell_registry.py`, `cross_build.py`, `build.py`
 and `gate.py` (a Rust repository keeps its own `build.py` and `gate.py`; only
-`cell_registry.py` is common there), and `20_ops/tools/text-format.ps1`. They
+`cell_registry.py` is common there), and `20_ops/tools/text_format.py`. They
 are copied verbatim, never merged: a downstream repository never edits them, a
 local edit is a defect, and a needed change goes upstream and comes back by
 synchronization. `python -I -B 20_ops/tools/comsect1_maint/sync.py --from

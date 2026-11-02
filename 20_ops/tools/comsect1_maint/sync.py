@@ -5,7 +5,7 @@
 The common layer is `20_ops/tools/comsect1_maint/**`, the entry shims
 `native_gate.py`, `cell_registry.py`, `cross_build.py`, `build.py`, `gate.py`
 (a Rust product keeps its own `build.py`, `gate.py` and has no use for the C
-shims: only `cell_registry.py` is common there) and `text-format.ps1`. Every
+shims: only `cell_registry.py` is common there) and `text_format.py`. Every
 other file of `20_ops/tools/` is local and never written here.
 
     python -I -B 20_ops/tools/comsect1_maint/sync.py --write-manifest
@@ -37,7 +37,7 @@ PACKAGE = "comsect1_maint"
 MANIFEST_RELATIVE = PACKAGE + "/sync_manifest.json"
 SHIMS = ("build.py", "cell_registry.py", "cross_build.py", "gate.py", "native_gate.py")
 RUST_SHIMS = ("cell_registry.py",)
-ROOT_FILES = ("text-format.ps1",)
+ROOT_FILES = ("text_format.py",)
 IGNORED_DIRECTORIES = ("__pycache__",)
 
 

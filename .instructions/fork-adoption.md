@@ -25,7 +25,7 @@ Complete this checklist in the template-derived repository's first change:
    `comsect1.json`.
 10. Retain the root `.gitattributes` and `.editorconfig`, configure every added
    formatter or generator to emit LF, and run
-   `20_ops/tools/text-format.ps1 -Apply` once before structural verification.
+   `python -I -B 20_ops/tools/text_format.py --apply` once before structural verification.
 11. Confirm future template synchronization is configured to update common
     files while preserving `.instructions/kind/` and `.instructions/local/`.
     Synchronization also copies `20_ops/tools/comsect1_maint/` and the entry
