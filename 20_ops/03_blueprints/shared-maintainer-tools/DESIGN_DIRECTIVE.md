@@ -376,8 +376,8 @@ Behaviour equivalence per product: run `gate.py --cell <cell> --target windows`,
 ## 9. Boundary to the common SDK tool (T1)
 
 `fnd-sdk-standard` `10_pkg/sdk_tool/comsect1_sdk_tool` builds
-`tools/comsect1_sdk.pyz`, shipped in every SDK (DCB, HSB, WSB, Sunset, Gantry,
-Eschaton) for SDK *users* (`install-sdk`, `bundle-runtime`). `comsect1_maint`
+`tools/comsect1_sdk.pyz`, shipped in every Tier 2 SDK (DCB, HSB, WSB, Gantry)
+for SDK *users* (`install-sdk`, `bundle-runtime`). `comsect1_maint`
 is for *maintainers* and is never shipped: it is not a recipe input, never
 appears in an SDK or RUNTIME deliverable, and contains no install or bundle
 logic. Keep the two apart by rule, not by inspection: each product's
