@@ -1,6 +1,6 @@
-# Unit Repository Refactoring and Updates
+# Repository Refactoring and Updates
 
-This guide applies only to a unit repository. It does not define umbrella
+This guide applies only to a template-derived repository. It does not define umbrella
 membership or category structure.
 
 ## Invariants
@@ -26,7 +26,7 @@ membership or category structure.
 1. Record scope and behavior invariants in `20_ops/04_work_orders/`. Identify
    any authorized released external contract; absence means current-state
    replacement, not compatibility work.
-2. Identify the affected units and use the fork's fast development-feedback
+2. Identify the affected units and use the repository's fast development-feedback
    operation while editing. Do not create a clean-room verification run merely
    to begin ordinary implementation.
 3. Before semantic edits, derive the Cell's public meaning and state flow,

@@ -13,7 +13,7 @@ Use only these disposable roots:
 99_trash/<cleanup-id>/
 ```
 
-The `development` path is the sole reusable-cache exception. A fork's
+The `development` path is the sole reusable-cache exception. A repository's
 language-specific instructions must name its exact `<tool>/<scope>` child and
 the command that uses it. It is operational output, never evidence. All other
 paths are task-owned runs and must remain non-overlapping.

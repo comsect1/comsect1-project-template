@@ -28,12 +28,12 @@
   development, verification, validation, traceability, assurance, and release
   process.
 - `30_cert/01_verification/` through `30_cert/04_release/` contain only explicitly
-  issued, immutable final credential packages.
+  issued, immutable final packages.
 - `90_temps/` is the only disposable generation root. `99_trash/` is the only
   cleanup quarantine.
 - Apply the common [development feedback and release evidence policy](./.instructions/development-feedback-and-release-evidence.md).
   Language, compiler, package-manager, test-runner, and platform bindings must
-  be defined by this fork's own instructions; do not present them as Spec law.
+  be defined by this repository's own instructions; do not present them as Spec law.
 - Repository-authored text follows [the text-format policy](./.instructions/text-format-policy.md).
   Validate it with `20_ops/tools/text-format.ps1`; use its explicit `-Apply`
   mode for an unstaged byte-format correction.
@@ -60,10 +60,10 @@
 
 - Root `.instructions/*.md` files supplied by this template are common
   instructions. Template synchronization may update them.
-- `.instructions/kind/` is the fork-owned repository-kind layer. Classify the
+- `.instructions/kind/` is the repository-owned kind layer. Classify the
   repository during adoption and place durable instructions shared by that kind
   there; template synchronization must not overwrite it.
-- `.instructions/local/` is the fork-owned repository-local layer. Put durable
+- `.instructions/local/` is the repository-owned local layer. Put durable
   project-specific constraints and operating guidance there, not inline history
   in this file; template synchronization must never overwrite or delete it.
 - Task-only authority remains in `20_ops/` records and must not be promoted to a
@@ -79,7 +79,7 @@
 - Create every transient output below one exact task-owned
   `90_temps/<class>/<tool-or-purpose>/<run-id>/` directory. The sole exception
   is the explicitly named reusable development cache defined by the common
-  development-feedback policy and the fork's language-specific instructions.
+  development-feedback policy and the repository's language-specific instructions.
 - A task is incomplete while its owned temporary output remains.
 - Promote only compact reviewed records to `20_ops/`; issue material into `30_cert/`
   only through an authorized finalization step.
@@ -110,7 +110,7 @@
 - [Lifecycle and traceability](./.instructions/lifecycle-and-traceability.md)
 - [Development feedback and release evidence](./.instructions/development-feedback-and-release-evidence.md)
 - [Temporary output and cleanup](./.instructions/temporary-output-and-cleanup.md)
-- [Fork adoption](./.instructions/fork-adoption.md)
+- [Template adoption](./.instructions/fork-adoption.md)
 - [Licensing policy](./.instructions/licensing-policy.md)
 - [Refactoring and updates](./.instructions/refactoring-and-updates.md)
 - [Version and compatibility](./.instructions/version-and-compatibility.md)

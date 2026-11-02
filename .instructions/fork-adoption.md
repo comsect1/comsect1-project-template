@@ -1,6 +1,6 @@
-# Fork Adoption
+# Template Adoption
 
-Complete this checklist in the fork's first change:
+Complete this checklist in the template-derived repository's first change:
 
 1. Replace template identity in `README.md` and `AGENTS.md`.
 2. Record the template upstream URL and exact baseline commit.

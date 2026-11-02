@@ -9,18 +9,18 @@ work decisions from silently becoming permanent policy.
 1. **Common** — Root `.instructions/*.md` files supplied by the project
    template. They define invariants and operational rules shared by every
    downstream project. The template owns and may update these files.
-2. **Kind** — `.instructions/kind/`. The fork owns its repository-kind
+2. **Kind** — `.instructions/kind/`. The repository owns its repository-kind
    classification and guidance shared by repositories of that kind, such as an
    application, tool, platform, library, driver, runtime, trial, or another
    explicitly named kind. The template supplies only the classification slot.
-3. **Local** — `.instructions/local/`. The fork owns durable instructions unique
+3. **Local** — `.instructions/local/`. The repository owns durable instructions unique
    to this project, including its product boundaries, subsystem responsibilities,
    user-interface rules, domain constraints, and project-specific verification.
 4. **Task-scoped** — Authorized records in `20_ops/`. They govern one bounded
    change, experiment, investigation, or release operation and expire with that
    scope unless deliberately promoted and reclassified.
 
-The examples above are descriptive, not a closed global taxonomy. A fork must
+The examples above are descriptive, not a closed global taxonomy. A template-derived repository must
 state its chosen kind and rationale instead of inferring it from a repository
 name, umbrella category, or source layout.
 
@@ -28,7 +28,7 @@ name, umbrella category, or source layout.
 
 - Governing specifications, explicit external contracts, and license boundaries
   retain their own authority and cannot be weakened by repository instructions.
-- Common invariants apply to every fork. Kind instructions may narrow them for a
+- Common invariants apply to every template-derived repository. Kind instructions may narrow them for a
   declared repository class; local instructions may narrow them for one project.
 - A more specific layer may add constraints or choose among options explicitly
   left open by a broader layer. It may not contradict or weaken the broader

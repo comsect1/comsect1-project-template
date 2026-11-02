@@ -18,10 +18,10 @@ release evidence.
 Do not run a complete test suite, clean-room build, full static-analysis pass,
 package-production flow, or complete Cell verification for each edit. Those operations
 belong to a release candidate unless a governing specification, an identified
-external contract, or an authorized work order expressly requires an earlier
+external contract, or an authorized work package expressly requires an earlier
 check.
 
-The fork's kind or local instructions define the concrete language and tool
+The repository's kind or local instructions define the concrete language and tool
 operation: its command, affected-unit selection, reusable cache location, and
 the cases that require an executable rather than a compiler or syntax check.
 They may strengthen this policy for an identified safety or contract boundary,
@@ -42,7 +42,7 @@ passing development operation does not waive any release-candidate check.
 
 A reusable development cache is operational output, not retained evidence. It
 is permitted only at the exact `90_temps/development/<tool>/<scope>/` location
-defined by the fork. Keep it ignored, disposable, and separate from every
+defined by the repository. Keep it ignored, disposable, and separate from every
 task-owned run. Remove it through the ordinary quarantine procedure when the
 work scope ends or the cache becomes stale; never promote it to `20_ops/` or
 `30_cert/`.

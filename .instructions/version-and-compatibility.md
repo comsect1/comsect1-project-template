@@ -33,7 +33,7 @@ A domain term that happens to contain a number is allowed only when the number
 is part of the current external domain meaning, not a disguised development
 generation. Official release metadata is allowed at its authorized boundary.
 
-An internal `r{n}` may appear in a work order, review note, issue, or other
+An internal `r{n}` may appear in a work package, review note, issue, or other
 non-normative traceability record. Prefer the record's name or metadata over
 source comments. It must never change what is built, loaded, stored, or run.
 

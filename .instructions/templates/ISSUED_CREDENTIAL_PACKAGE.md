@@ -1,4 +1,4 @@
-# Issued Credential Package: <title>
+# Issued Package: <title>
 
 Class: `<verification|validation|assurance|release>`
 Issue ID: `<stable-id>`

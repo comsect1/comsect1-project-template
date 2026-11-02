@@ -8,7 +8,7 @@
 - Authored and generated text uses UTF-8 with LF line endings and a final
   newline. True binary artifacts are marked `-text` and remain byte-preserved.
 - `.editorconfig` aligns supporting editors with the Git policy. Language
-  formatters and generators added by a fork must be configured to emit LF.
+  formatters and generators added by a template-derived repository must be configured to emit LF.
 - Do not introduce extension-specific CRLF exceptions inside a Cell. Structural
   verification judges the observed bytes of all governed text together.
 
