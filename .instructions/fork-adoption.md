@@ -28,3 +28,9 @@ Complete this checklist in the template-derived repository's first change:
    `20_ops/tools/text-format.ps1 -Apply` once before structural verification.
 11. Confirm future template synchronization is configured to update common
     files while preserving `.instructions/kind/` and `.instructions/local/`.
+    Synchronization also copies `20_ops/tools/comsect1_maint/` and the entry
+    shims (`comsect1_maint/sync.py --from <template checkout>`); record the
+    template and its baseline commit in `.instructions/template-origin.json`
+    (`comsect1.template-origin.v1`). A repository that uses the maintainer
+    tools writes `20_ops/tools/maint_config.json` and, only for product logic
+    that is not data, `20_ops/tools/product_hooks.py`.

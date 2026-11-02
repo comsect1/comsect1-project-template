@@ -56,3 +56,18 @@ Template synchronization may add or update common files and the common routing
 section of `AGENTS.md`. It must treat `.instructions/kind/` and
 `.instructions/local/` as downstream-owned: never overwrite, delete, reset, or
 silently reclassify their contents. Report a conflict for human resolution.
+
+The common layer also holds executable content: the maintainer tool package
+`20_ops/tools/comsect1_maint/**` (its tests included), the entry shims
+`20_ops/tools/native_gate.py`, `cell_registry.py`, `cross_build.py`, `build.py`
+and `gate.py` (a Rust repository keeps its own `build.py` and `gate.py`; only
+`cell_registry.py` is common there), and `20_ops/tools/text-format.ps1`. They
+are copied verbatim, never merged: a downstream repository never edits them, a
+local edit is a defect, and a needed change goes upstream and comes back by
+synchronization. `python -I -B 20_ops/tools/comsect1_maint/sync.py --from
+<template checkout>` copies them and prints the baseline commit to record in
+`.instructions/template-origin.json`; `sync.py --check` reports a `MODIFIED`,
+`MISSING` or `EXTRA` common file. The local counterpart is
+`20_ops/tools/maint_config.json`, `cells.json`, `native_gate_config.json`, the
+optional `product_hooks.py` and every other file of `20_ops/tools/`;
+synchronization never writes them.

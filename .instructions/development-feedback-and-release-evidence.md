@@ -27,6 +27,11 @@ the cases that require an executable rather than a compiler or syntax check.
 They may strengthen this policy for an identified safety or contract boundary,
 but may not represent fast feedback as release evidence.
 
+The fast-feedback operation for the template-owned maintainer tools is
+`python -I -B -m unittest discover -s 20_ops/tools/comsect1_maint/test`. Their
+tests travel with the package because they are common-layer content: the one
+exception to test source in `10_pkg/`.
+
 ## Release evidence
 
 Only a release candidate runs its complete required test suite, formal

@@ -14,6 +14,7 @@
 | Findings, dispositions, and readiness preparation | `20_ops/09_assurance/` |
 | Packaging and release preparation | `20_ops/10_release/` |
 | Executable tool scripts, build helpers, and runners | `20_ops/tools/` |
+| Template-owned maintainer tool package and its tests | `20_ops/tools/comsect1_maint/` |
 | Auxiliary dotfiles, third-party configs, and tool presets | `.configs/` (e.g., `.configs/cmake/`, `.configs/meridian/`) |
 | Raw output, caches, traces, screenshots, staging | `90_temps/` |
 | Issued immutable final packages | matching numbered `30_cert/` directory |
