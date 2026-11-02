@@ -1,6 +1,8 @@
 # Shared maintainer tools design directive
 
-Date: 2026-11-02. Work revision r1 (design only; nothing implemented).
+Date: 2026-11-02. Work revision r2: stage 1 (steps 1 to 9: template package,
+instructions, DCB adoption) done; record and deviations in section 14. Steps
+10 to 14 (HSB, WSB, Hatbit, Sunset, closing T2) are open.
 
 Authority: `fnd-architecture` reference model section 8, finding T2
 ("`native_gate.py`, `native_path_guard.py`, `cross_build.py`,
@@ -510,3 +512,125 @@ maintainer tools at <baseline>", preceded by the before-run of section 8:
 14. Close T2 in `fnd-architecture` section 8 with the baseline commit and the
     four product commits; open the two section 10 findings (package.py
     release helpers; WSB consumer tools as SDK content).
+
+## 14. Stage 1 record (r2, 2026-11-02)
+
+Steps 1 to 9 are done; steps 10 to 14 are open. Decided by recommendation
+(owner directive); the owner authorized commits on `main` of both
+repositories, so the template work landed on `main` without a worktree or PR.
+
+### 14.1 What landed
+
+Template `comsect1-project-template` (`main`):
+
+| Commit | Content |
+|---|---|
+| `604ace4` | `text-format.ps1`: Sunset's untracked-file scan and BOM refusal |
+| `188ea6b` | `20_ops/tools/comsect1_maint/` (`path_guard` 30, `process` 245, `config` 306, `sync` 259, `registry` 772, `native_gate` 933, `cross_build` 266, `host_build` 892, `gate` 126, `__init__` 17 lines), `sync_manifest.json`, five entry shims (26 to 28 lines each), the tests (16 files, 83 tests) and fixtures; `.gitignore` keeps `__init__.py` |
+| `9761699` | the four common instructions of section 6 |
+| `7c2cfc1` | this directive (r1) |
+| `dca7cbf` | native input owner protocol selected by `publications` (14.3 item 4) |
+
+DCB `prd-plt-data-comm-bridge-reboot` (`main`): `ea66275c` synchronizes the
+common instructions (4149c03 to 7c2cfc1, unchanged in dca7cbf); `333326a8`
+adopts the tools at `dca7cbf` (2,535 copied lines retired, replaced by 138
+shim lines and `maint_config.json`); the record is
+`20_ops/06_verification/maintainer_tools_migration.md`.
+
+### 14.2 Acceptance (DCB)
+
+- Test id sets: 25 suites (every folder of `10_pkg/test` holding tests),
+  before at `7331679c`, after at the adoption commit: before 1,161 passed, 6
+  skipped, 3 failed (three `tool/wsb` tests that need a WSB checkout and a
+  current WSB profile); after the same skipped and failed sets plus one TCP
+  loopback test of `c/binder` that fails since the before run, with the
+  pre-migration tools restored as well (host state, not the migration; the
+  library under test has the same bytes before and after). Otherwise the
+  passed sets are identical.
+- Native Gate on every Cell and target (28 runs, run ids reused): verdicts,
+  findings, codes, outcome summaries and report digests unchanged; only
+  `maintainer_tools` is new. The plan digest changes on every run of either
+  code (it holds the native-input authority ids, new per receipt).
+- `cross_build.py --archive` (all Cells): `summary.json` identical but
+  `maintainer_tools`.
+- `build.py` on every host Cell (14): build and image records identical but
+  `maintainer_tools`; the product libraries keep their bytes. Fixture
+  libraries differ on every build, before and after alike (their link lacks the
+  reproducible flags; pre-existing, recorded in the DCB record).
+- `package.py --dist` (`sdk/windows-x86_64` with its runtime, `sdk/cortexm`):
+  588 files each; only the revision-bound SWID tags and SBOMs (and the package
+  records) differ, by the source commit.
+
+### 14.3 Deviations from r1
+
+1. Entry shim: loads `comsect1_maint/__init__.py` by file path with its
+   submodule search location instead of `sys.path.insert`, so no module of
+   `20_ops/tools/` becomes importable by name (risk 7 removed); it refuses a
+   `comsect1_maint` already loaded from another folder.
+2. `.gitignore` of the template ignores `_*`; it now keeps `__init__.py` and
+   `__main__.py` (DCB and WSB already did; HSB does not: add the two lines
+   before its sync, or the package is silently untracked).
+3. Section 4 example offers were wrong: DCB's `_FAMILY_OFFERS` are
+   `communication 1` and `port 2` (`[["communication", 1, 1], ["port", 2, 1]]`).
+4. Native input owners: the installed Gate set's `comsect1-native-input`
+   (`4ec0f0dc...`, pinned by all four products) refuses `--source-cell`. The
+   owner protocol (`--source-cell`, `--publication`) is used only when the lane
+   configuration has a `publications` member (even `[]`); without it, external
+   inputs go by id only. So `publications` absent is not the same as `[]`
+   (section 3.1 said it was). WSB and Sunset carry the member: with this Gate
+   set, any of their Cells whose closure reaches another Cell's files fails
+   with NATIVE_INPUT_FAILED until the Gate set is updated or the member is
+   dropped; check before their migration.
+5. Hooks: `run_command(kind, command, env, cwd, what, context)` added; when a
+   product defines it, host_build runs every compile and link through it
+   (WSB's per-command `native_build_evidence.observe`, which `build_evidence`
+   alone cannot express). `build_inputs_begin`/`end` are called when defined
+   and required when `registry.sdk_dependencies` is set.
+6. Drift: `tool_drift_accepted` and the problem list live inside the
+   `maintainer_tools` member. Exit classes: native Gate 4; build.py and
+   cross_build.py 1; gate.py passes `--accept-tool-drift` to the native Gate.
+7. `sync.py`: `--to <product>` for the first adoption (the product has no
+   `sync.py` yet); `--from` refuses a template checkout with changes or whose
+   files differ from its manifest, moves stale package files through
+   `99_trash`; `__pycache__` is ignored; a Rust product (`language` of its
+   `maint_config.json`) needs only the `cell_registry.py` shim.
+8. The native Gate summary has `native_toolchain` only in the manifest shape,
+   so DCB's summary keeps its members.
+9. `read_report`: WSB's separate checks (types, count, PASS needs CONTINUE)
+   come first, then DCB's strict set; PASS with a blocked assessment has its
+   own message.
+10. Registry: the Rust mode is a class `RustCell` (HSB code calling
+    `Cell(name, entry)` must use it); the `sdk_dependencies` Cell key is
+    admitted only when configured, and Cells below
+    `required_for_path_prefix` declare exactly `allowed`; `cores` may be empty
+    only without the `arm` target.
+11. host_build: the WSB fixture include roots (the exported Cells' dependency
+    membranes and passive roots) are common; DCB's fixture objects are
+    unchanged by them.
+12. DCB also synchronized its common instructions, so its recorded baseline is
+    true for every common file; its `wsb_evidence.py` tool fingerprint covers
+    `maint_config.json` and the package manifest, since the shims alone no
+    longer identify the tools. Section 9's `20_ops/` refusal already holds in
+    DCB (`package.py` admits only `10_pkg/` sources).
+13. gate.py prints the cleanup preview line (Sunset behaviour, now common).
+
+### 14.4 For the HSB, WSB and Sunset migrations
+
+- Capture the before id sets first; run `sync.py --from` from the template
+  checkout with `--to`; write `maint_config.json` from
+  `test/fixtures/config/<product>.json` (it validates today) and check every
+  value against the product code before use.
+- WSB: `cells.json` gains `passive_include_roots` on the seven Cells of its
+  table; `product_hooks.py` needs `provider_family`, `run_command` (observe)
+  and `build_evidence`; decide item 4 before the first Gate run; its
+  `test_native_gate_report.py`, `_toolchain.py` and `_input_owners.py` are now
+  template tests (delete them or repoint patches to `comsect1_maint.native_gate`).
+- Sunset: hooks `provider_family`, `build_inputs_begin`/`end`,
+  `gate_publications`; its cleanup tests patch `gate._is_link`, which is now
+  `comsect1_maint.process.is_link`; its two `test_native_gate_report.py`
+  copies go.
+- HSB: `.gitignore` (item 2); Rust registry via `RustCell`; replace its
+  duplicated helpers with `comsect1_maint.process`.
+- Every product: tests that patch a module global through a shim must patch
+  `<shim>._implementation` (the package module); the template test
+  `test_shims.py` asserts every shim exposes its module.
