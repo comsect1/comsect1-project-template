@@ -1,14 +1,22 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Kim Hyeongjeong (comsect1)
-"""Each entry shim exposes the names of its package module (the same objects), loaded by file path."""
+"""Each entry shim exposes the names of its package module (the same objects), loaded by file path.
+
+Only the shims common for this checkout's language are checked: a Rust product keeps its own `build.py`
+and `gate.py` and has no C shims (`sync.selected`)."""
 import unittest
 
 import maint_support as support
 
+sync = support.package_module("sync")
+
 
 class ShimTest(unittest.TestCase):
     def test_every_shim_exposes_its_module(self):
+        common = sync.selected(sorted(support.SHIMS), sync.product_language(str(support.TOOLS_ROOT)))
         for file_name, module_name in support.SHIMS.items():
+            if file_name not in common:
+                continue
             with self.subTest(shim=file_name):
                 shim = support.load_file(support.TOOLS_ROOT / file_name, "shim_under_test_" + module_name)
                 module = support.package_module(module_name)

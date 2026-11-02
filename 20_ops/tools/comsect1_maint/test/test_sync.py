@@ -22,8 +22,10 @@ class SyncTest(unittest.TestCase):
     def copy_tools(self, name):
         tools = self.work.folder(name) / "20_ops" / "tools"
         shutil.copytree(support.PACKAGE_ROOT, tools / "comsect1_maint", ignore=shutil.ignore_patterns("__pycache__"))
+        # Placeholders: the checkout may be a Rust product, whose build.py and gate.py are local and
+        # which has no C shims; these tests rewrite the manifest of the copy and need only the paths.
         for file_name in sync.SHIMS + sync.ROOT_FILES:
-            shutil.copyfile(support.TOOLS_ROOT / file_name, tools / file_name)
+            support.write(tools / file_name, "# common file %s\n" % file_name)
         return tools
 
     def test_this_checkout_matches_its_manifest(self):
