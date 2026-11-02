@@ -13,7 +13,7 @@ Linux.
   - `orrery` (`prd-tool-orrery`)
   - `gantry` (`prd-tool-gantry`)
   - `halo` (`prd-fnd-halo`)
-  - `meridian` (`prd-plt-meridian`)
+  - `wsb` (`prd-plt-world-scope-bridge`)
   - `data-comm-bridge` (`prd-plt-data-comm-bridge`)
 - Sub-daemons, celestians, or internal role directories (`authority`, `host`,
   `container`, `client`, `gravity`, `armillary`, `quasar`, `sextant`,
@@ -69,7 +69,7 @@ following deterministic priority order:
 1. **Explicit CLI flag**: `--home <abs_path>` (or `--config-dir <abs_path>`)
 2. **Family home environment variable (`<FAMILY>_HOME`)**:
    - `ESCHATON_HOME`, `ORRERY_HOME`, `GANTRY_HOME`, `HALO_HOME`,
-     `MERIDIAN_HOME`, `DCB_HOME`
+     `WSB_HOME`, `DCB_HOME`
    - Maps directly to the single `<family>` root directory (`$<FAMILY>_HOME`).
 3. **OS Platform Default**: as defined in Section 2.
 
