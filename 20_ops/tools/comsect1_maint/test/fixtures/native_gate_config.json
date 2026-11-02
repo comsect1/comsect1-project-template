@@ -1,0 +1,44 @@
+{
+  "gate_set": {
+    "runtime_root": "%LOCALAPPDATA%/comsect1/runtime",
+    "active_set_file": "current.json",
+    "binary_subdirectory": "payload/bin",
+    "binaries": {
+      "gate": "comsect1-gate.exe",
+      "native_input": "comsect1-native-input.exe",
+      "c_frontend": "comsect1-c-frontend.exe",
+      "libclang": "libclang.dll"
+    }
+  },
+  "expected_sha256": {
+    "gate": "01d875b5cf99e106bbda4d03c7e003903f5148b86d6ab0f3c0ef37338be17fdb",
+    "native_input": "4ec0f0dc5df87a51fd81b1f586c1defce078b1b02c584c9a7434d08a57ee38be",
+    "c_frontend": "ba6db73b5582031cbd2a11ff664df948ba8595e027191f1bcd4de95c832e3e5e",
+    "libclang": "45f81b31a2004839da6f9479d8b6aa7013f7fe4ba01ebca77953f38e8ac7dec2"
+  },
+  "build": {
+    "target": "x86_64-pc-windows-msvc",
+    "standard": "c11",
+    "plain_char": "signed",
+    "virtual_root": "C:/native",
+    "preprocessing_epoch_seconds": 0,
+    "definitions": {},
+    "include_roots": ["."],
+    "external_include_roots": [],
+    "system_include_roots": []
+  },
+  "clang_resource": {
+    "resource_dir": null,
+    "required_major": "19",
+    "clang_candidates": [
+      "%ANDROID_NDK_HOME%/toolchains/llvm/prebuilt/windows-x86_64/bin/clang.exe",
+      "%LOCALAPPDATA%/Android/Sdk/ndk/*/toolchains/llvm/prebuilt/windows-x86_64/bin/clang.exe",
+      "clang"
+    ]
+  },
+  "timeouts_seconds": {
+    "clang": 60,
+    "native_input": 120,
+    "gate": 300
+  }
+}

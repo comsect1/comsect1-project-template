@@ -16,4 +16,7 @@
 
 # Ad-hoc debug directories and scratch scripts
 _*
+# Python package files keep their language-defined names
+!__init__.py
+!__main__.py
 

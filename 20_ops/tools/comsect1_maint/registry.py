@@ -1,0 +1,772 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Kim Hyeongjeong (comsect1)
+"""Reader of a product's Cell registry (`maint_config.json` `registry.path`, usually `20_ops/tools/cells.json`).
+
+Python standard library only. Language `c`: the registry is the single list of
+Cells, per Cell the path, the language standard, the definitions, the include
+roots, the dependencies, the freestanding flag and the supported targets.
+Everything else follows from the layout rule (`<prefix>` is the product's
+`symbol_prefix`, `<PREFIX>` its `environment_prefix`):
+
+    Cell root        10_pkg/c/<path>        (<path> is <name>, or <category>/<name>)
+    Python tests     10_pkg/test/c/<path>   (<prefix>_<name>_abi.py, test_<prefix>_<name>_*.py)
+    public header    the one membrane/xpt_*.h (product suffix exclusions apply)
+    sources          every .c below the Cell root
+    contract headers every contract/*.h
+    library          <prefix>_<name>.dll, found through <PREFIX>_<NAME>_LIBRARY
+
+A Provider Cell lives at `provider/<name>`; its stem `<prefix>_provider_<name>`
+names the ABI mirror, the tests, the test image, the static registration
+`<prefix>_provider_<name>_registration` and its variable. It is freestanding,
+depends only on library Cells and declares the cross-build `budget` of its cores
+(always, or only when cross-built: `registry.provider_budget_required`). A Cell
+whose `comsect1.json` names `fnd-sdk-standard` among its hosted vocabularies
+reads `comsect1_provider.h` of the pinned checkout (`standard_include_root`).
+
+Every Cell name and path segment is one lowercase word. Across the Cells no two
+C file stems may be equal (a stem lives in one folder of one Cell; the only
+exception is a header-only stem whose copies carry one include guard), and no
+two compiled units may define the same external-linkage symbol
+(`require_unique_symbols`, applied by host_build and cross_build).
+
+Language `rust`: Cells at `10_pkg/rust/<path>` (crate root, `cell/` holds
+`comsect1.json`), keys `path`, `edition`, `depends_on` (`RustCell`).
+
+Any deviation fails closed with a RegistryError.
+"""
+
+import hashlib
+import json
+import os
+import re
+import subprocess
+
+from . import config as _config
+from . import path_guard as _guard
+from . import process
+
+TOOLS_ROOT = process.TOOLS_ROOT
+REPO_ROOT = process.REPO_ROOT
+RUN_ID_PATTERN = process.RUN_ID_PATTERN
+# One lowercase word: a Cell name and each segment of a Cell path.
+NAME_PATTERN = re.compile(r"[a-z][a-z0-9]{0,31}")
+STANDARD_PATTERN = re.compile(r"c[0-9]{2}")
+EDITION_PATTERN = re.compile(r"20[0-9]{2}")
+
+CELL_KEYS = {"path", "standard", "definitions", "include_roots", "depends_on", "freestanding", "targets"}
+# Optional keys of a Cell (see Cell below); sdk_dependencies only when the product configures them.
+OPTIONAL_CELL_KEYS = {"library_from", "link_with", "link_libraries", "exports", "hosted_include_roots",
+                      "test_fixture", "fixture_units", "link_fixture", "external_headers", "budget",
+                      "passive_include_roots"}
+RUST_CELL_KEYS = {"path", "edition", "depends_on"}
+# The category folder of the Provider Cells (provider/<name>).
+PROVIDER_CATEGORY = "provider"
+# budget: the cross-build size budget of every cross core, in bytes of the Cell's own objects.
+BUDGET_KEYS = {"text", "data", "bss"}
+# external_headers of a Cell that adopts an external header tree (a firmware kernel), read only and
+# outside this repository: the variable naming the checkout, its pinned commit, the include roots of
+# every core and of the Gate's core, and repository folders of build inputs (a kernel configuration).
+EXTERNAL_HEADER_KEYS = {"environment", "commit", "include_roots", "core_include_roots", "gate_core",
+                        "config_roots"}
+COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}")
+TARGET_KEYS = {"windows": {"gate"}, "arm": {"gate", "cross_cores"}}
+GATE_KEYS = {"target", "plain_char"}
+
+_PRESENT = _config.present()
+_SETTINGS = _config.current() if _PRESENT else None
+# The product view of this repository (None in the template, which has no configuration).
+REGISTRY_PATH = _SETTINGS.registry_path() if _SETTINGS else None
+TARGET_NAMES = tuple(_SETTINGS.registry["target_names"]) if _SETTINGS and _SETTINGS.language == "c" \
+    else _config.TARGET_NAMES
+ENVIRONMENT_PATTERN = re.compile(r"%s_[A-Z][A-Z0-9_]{0,62}" % _SETTINGS.environment_prefix) if _SETTINGS else None
+STANDARD_PIN_PATH = _SETTINGS.path_of(_SETTINGS.host_build["standard_pin"]) \
+    if _SETTINGS and _SETTINGS.host_build else None
+
+
+class RegistryError(Exception):
+    """The registry or a Cell layout is invalid; the message is the reason."""
+
+
+def _require(condition, message):
+    if not condition:
+        raise RegistryError(message)
+
+
+def _keys(section, expected, what):
+    _require(isinstance(section, dict), "%s must be an object" % what)
+    _require(set(section) == set(expected), "%s must hold exactly %s, found %s"
+             % (what, sorted(expected), sorted(section)))
+
+
+def _settings(settings):
+    if settings is not None:
+        return settings
+    try:
+        return _config.current()
+    except _config.ConfigError as error:
+        raise RegistryError(str(error))
+
+
+def checked_original_path(path):
+    """The resolved path after refusing a linked or reparse component on the way (str)."""
+    try:
+        return str(_guard.checked_path(path))
+    except (OSError, ValueError) as error:
+        raise RegistryError("unsafe input path %s: %s" % (path, error)) from error
+
+
+class Cell:
+    """One validated C registry entry plus the paths its name implies."""
+
+    def __init__(self, name, entry, cores, settings=None):
+        settings = _settings(settings)
+        self.settings = settings
+        policy = settings.registry
+        prefix = settings.symbol_prefix
+        target_names = tuple(policy["target_names"])
+        optional = OPTIONAL_CELL_KEYS | ({"sdk_dependencies"} if policy["sdk_dependencies"] is not None else set())
+        _require(NAME_PATTERN.fullmatch(name) is not None, "Cell name %r is not one lowercase word" % name)
+        _require(isinstance(entry, dict) and CELL_KEYS <= set(entry) <= CELL_KEYS | optional,
+                 "Cell %s must hold %s and may hold %s, found %s"
+                 % (name, sorted(CELL_KEYS), sorted(optional), sorted(entry) if isinstance(entry, dict) else entry))
+        self.name = name
+        self.path = entry["path"]
+        segments = self.path.split("/") if isinstance(self.path, str) else []
+        _require(segments and all(NAME_PATTERN.fullmatch(s) is not None for s in segments)
+                 and segments[-1] == name and len(segments) <= 2,
+                 "Cell %s: path %r must be %s or <category>/%s, one lowercase word per segment"
+                 % (name, self.path, name, name))
+        self.standard = entry["standard"]
+        _require(isinstance(self.standard, str) and STANDARD_PATTERN.fullmatch(self.standard) is not None,
+                 "Cell %s: standard %r is not like c11" % (name, self.standard))
+        self.definitions = entry["definitions"]
+        _require(isinstance(self.definitions, dict)
+                 and all(isinstance(k, str) and isinstance(v, str) for k, v in self.definitions.items()),
+                 "Cell %s: definitions must map names to strings" % name)
+        self.include_roots = entry["include_roots"]
+        _require(isinstance(self.include_roots, list) and self.include_roots
+                 and all(isinstance(v, str) for v in self.include_roots),
+                 "Cell %s: include_roots must be a non-empty list of strings" % name)
+        self.depends_on = entry["depends_on"]
+        _require(isinstance(self.depends_on, list) and all(isinstance(v, str) for v in self.depends_on)
+                 and len(set(self.depends_on)) == len(self.depends_on) and name not in self.depends_on,
+                 "Cell %s: depends_on must be a list of other Cell names without duplicates" % name)
+        self.sdk_dependencies = entry.get("sdk_dependencies", [])
+        sdk = policy["sdk_dependencies"]
+        if sdk is not None:
+            required = list(sdk["allowed"]) if self.path.startswith(sdk["required_for_path_prefix"]) else []
+            _require(self.sdk_dependencies == required,
+                     "Cell %s: Cells below %s declare exactly the SDK dependencies %s, others none"
+                     % (name, sdk["required_for_path_prefix"], sdk["allowed"]))
+        self.dependencies = []  # Cell objects, filled by load_registry once every Cell exists
+        # A Cell that cannot be built alone (its required operations are bound by another Cell)
+        # names the Cell whose library carries its tests; with exports as well, it instead builds a
+        # library of its own over that Cell's binding (library_plan); link_with adds Cells to the
+        # test library beyond the dependencies; exports lists the Cells whose public header the
+        # library exports (default: this Cell); link_libraries are system import libraries;
+        # hosted_include_roots are absolute directories of an external SDK the native Gate lane
+        # reads (never edited); passive_include_roots are repository folders of declared passive
+        # vocabulary the Cell's units include (no publication authority implied).
+        self.library_from = entry.get("library_from")
+        self.link_with_names = entry.get("link_with", [])
+        self.link_libraries = entry.get("link_libraries", [])
+        self.export_names = entry.get("exports")
+        self.hosted_include_roots = entry.get("hosted_include_roots", [])
+        self.passive_roots = entry.get("passive_include_roots", [])
+        for key, value in (("link_with", self.link_with_names), ("link_libraries", self.link_libraries),
+                           ("hosted_include_roots", self.hosted_include_roots),
+                           ("passive_include_roots", self.passive_roots)):
+            _require(isinstance(value, list) and all(isinstance(v, str) and v for v in value)
+                     and len(set(value)) == len(value), "Cell %s: %s must be a list of distinct strings" % (name, key))
+        _require(self.library_from is None or (isinstance(self.library_from, str) and self.library_from != name),
+                 "Cell %s: library_from must name another Cell" % name)
+        _require(self.export_names is None or (isinstance(self.export_names, list) and self.export_names
+                 and all(isinstance(v, str) for v in self.export_names)
+                 and len(set(self.export_names)) == len(self.export_names)),
+                 "Cell %s: exports must be a non-empty list of distinct Cell names" % name)
+        for root in self.hosted_include_roots:
+            _require(os.path.isabs(root), "Cell %s: hosted_include_roots entry %r must be absolute" % (name, root))
+        for root in self.passive_roots:
+            _require(not os.path.isabs(root) and ":" not in root and "\\" not in root
+                     and all(part not in ("", ".", "..") for part in root.split("/"))
+                     and os.path.isdir(os.path.join(settings.repo_root, *root.split("/"))),
+                     "Cell %s: passive_include_roots entry %r must be a repository folder" % (name, root))
+        # test_fixture names a folder of the Cell's tests holding the C sources of a test-only library,
+        # built by host_build beside the library that carries the Cell's tests. It is test input, never
+        # a Cell and never linked into a product.
+        self.test_fixture = entry.get("test_fixture")
+        _require(self.test_fixture is None
+                 or (isinstance(self.test_fixture, str) and NAME_PATTERN.fullmatch(self.test_fixture) is not None),
+                 "Cell %s: test_fixture must be one lowercase word" % name)
+        self.link_with = []  # Cell objects, filled by load_registry
+        self.freestanding = entry["freestanding"]
+        _require(isinstance(self.freestanding, bool), "Cell %s: freestanding must be true or false" % name)
+        targets = entry["targets"]
+        _require(isinstance(targets, dict) and targets and set(targets) <= set(target_names),
+                 "Cell %s: targets must hold windows, arm or both" % name if set(target_names) == {"windows", "arm"}
+                 else "Cell %s: targets must contain only %s" % (name, ", ".join(target_names)))
+        self.targets = {}
+        for target, section in targets.items():
+            _keys(section, TARGET_KEYS[target], "Cell %s target %s" % (name, target))
+            _keys(section["gate"], GATE_KEYS, "Cell %s target %s gate" % (name, target))
+            _require(section["gate"]["plain_char"] in ("signed", "unsigned"),
+                     "Cell %s target %s: plain_char must be signed or unsigned" % (name, target))
+            for core in section.get("cross_cores", []):
+                _require(core in cores, "Cell %s: cross core %r is not in cores" % (name, core))
+            self.targets[target] = section
+        if self.cross_cores():
+            _require(self.freestanding, "Cell %s: cross-build needs freestanding true" % name)
+
+        repo = settings.repo_root
+        self.root = os.path.join(repo, "10_pkg", "c", *segments)
+        self.tests_root = os.path.join(repo, "10_pkg", "test", "c", *segments)
+        # A Provider (provider/<name>) keeps every public symbol in <prefix>_provider_<name>_.
+        self.provider = name if len(segments) == 2 and segments[0] == PROVIDER_CATEGORY else None
+        self.stem = "%s_provider_%s" % (prefix, name) if self.provider else "%s_%s" % (prefix, name)
+        self.registration = self.stem + "_registration" if self.provider else None
+        self.abi_path = os.path.join(self.tests_root, "%s_abi.py" % self.stem)
+        self.test_pattern = "test_%s_*.py" % self.stem
+        self.library_name = "%s.dll" % self.stem
+        self.definition_file = "%s.def" % self.stem
+        self.archive_name = "lib%s.a" % self.stem
+        self.library_environment = "%s_LIBRARY" % self.stem.upper()
+        self.function_prefix = self.stem + "_"
+        self.build_root = os.path.join(repo, "90_temps", "build", name)
+        self.budget = entry.get("budget")
+        if self.provider:
+            # A port Provider requires operations its target platform defines: it names that platform's
+            # Cell as library_from and is tested on its library; any other Provider builds its own image.
+            _require(self.freestanding
+                     and self.export_names is None and not self.link_with_names and not self.link_libraries
+                     and not self.hosted_include_roots and entry.get("test_fixture") is None,
+                     "Cell %s: a Provider Cell is freestanding, depends only on library Cells and builds its own "
+                     "test image or names the platform Cell whose library binds its required operations" % name)
+            if policy["provider_budget_required"] == "always":
+                _require(self.budget is not None, "Cell %s: a Provider Cell declares its cross-build budget" % name)
+            elif self.cross_cores():
+                _require(self.budget is not None, "Cell %s: a cross-built Provider declares its budget" % name)
+        if self.budget is not None:
+            _require(isinstance(self.budget, dict) and set(self.budget) == set(self.cross_cores())
+                     and self.budget,
+                     "Cell %s: budget must name exactly the cross cores %s" % (name, self.cross_cores()))
+            for core, limits in self.budget.items():
+                _keys(limits, BUDGET_KEYS, "Cell %s budget %s" % (name, core))
+                _require(all(isinstance(v, int) and not isinstance(v, bool) and v >= 0 for v in limits.values()),
+                         "Cell %s budget %s: sizes must be non-negative integers" % (name, core))
+        _require(os.path.isfile(os.path.join(self.root, "comsect1.json")),
+                 "Cell %s: %s has no comsect1.json" % (name, self.root))
+        # A Cell that declares the fnd-sdk-standard as a hosted vocabulary includes comsect1_provider.h
+        # of the pinned checkout (standard_roots).
+        self.adopts_standard = _declares_standard(os.path.join(self.root, "comsect1.json"))
+        self.sources = self._sources()
+        self.public_header = self._public_header(allow_none=self.export_names is not None
+                                                or self.library_from is not None)
+        self.contract_headers = self._contract_headers()
+        self.fixture_root = None
+        self.fixture_sources = []
+        self.fixture_library_name = None
+        if self.test_fixture is not None:
+            self.fixture_root = os.path.join(self.tests_root, self.test_fixture)
+            self.fixture_sources = sorted(n for n in os.listdir(self.fixture_root) if n.endswith(".c")) \
+                if os.path.isdir(self.fixture_root) else []
+            _require(self.fixture_sources, "Cell %s: test_fixture %s holds no .c file" % (name, self.fixture_root))
+            self.fixture_library_name = "%s_%s_%s.dll" % (prefix, name, self.test_fixture)
+        # link_fixture: the library of this Cell links against its fixture library, which defines the
+        # operations the Cell requires (a board double of a platform Cell). Test input only.
+        self.link_fixture = entry.get("link_fixture", False)
+        _require(isinstance(self.link_fixture, bool) and (not self.link_fixture or self.test_fixture is not None),
+                 "Cell %s: link_fixture must be true or false and needs a test_fixture" % name)
+        # A unit fixture compiles selected actual owner units with test effects. It can see this Cell's
+        # private headers, but is never a product input.
+        self.fixture_units = entry.get("fixture_units", [])
+        _require(isinstance(self.fixture_units, list)
+                 and all(isinstance(unit, str) and unit in self.sources for unit in self.fixture_units)
+                 and len(set(self.fixture_units)) == len(self.fixture_units),
+                 "Cell %s: fixture_units must name distinct current Cell source units" % name)
+        _require(not self.fixture_units or (self.test_fixture is not None and not self.link_fixture),
+                 "Cell %s: fixture_units needs a separate test_fixture and cannot link into the product" % name)
+        self.external_headers = entry.get("external_headers")
+        if self.external_headers is not None:
+            self._check_external_headers(cores)
+
+    def _check_external_headers(self, cores):
+        section = self.external_headers
+        prefix = self.settings.environment_prefix
+        _keys(section, EXTERNAL_HEADER_KEYS, "Cell %s external_headers" % self.name)
+        _require(isinstance(section["environment"], str)
+                 and re.fullmatch(r"%s_[A-Z][A-Z0-9_]{0,62}" % prefix, section["environment"]),
+                 "Cell %s: external_headers.environment must be a %s_* variable name" % (self.name, prefix))
+        _require(isinstance(section["commit"], str) and COMMIT_PATTERN.fullmatch(section["commit"]),
+                 "Cell %s: external_headers.commit must be a full commit id" % self.name)
+        relative = [section["include_roots"]] + list(section["core_include_roots"].values()) \
+            if isinstance(section["core_include_roots"], dict) else []
+        _require(relative and all(isinstance(v, list) and all(isinstance(r, str) and r and not os.path.isabs(r)
+                                                              and ".." not in r.split("/") for r in v)
+                                  for v in relative),
+                 "Cell %s: external_headers include roots must be relative to the checkout" % self.name)
+        _require(set(section["core_include_roots"]) == set(self.cross_cores())
+                 and all(core in cores for core in section["core_include_roots"]),
+                 "Cell %s: external_headers.core_include_roots must name exactly the cross cores" % self.name)
+        _require(section["gate_core"] in section["core_include_roots"],
+                 "Cell %s: external_headers.gate_core must be one of the cross cores" % self.name)
+        repo = self.settings.repo_root
+        _require(isinstance(section["config_roots"], list)
+                 and all(isinstance(r, str) and os.path.isdir(os.path.join(repo, *r.split("/")))
+                         and ".." not in r.split("/") and r.startswith("10_pkg/test/") for r in section["config_roots"]),
+                 "Cell %s: external_headers.config_roots must be folders below 10_pkg/test" % self.name)
+
+    def external_roots(self, core):
+        """(absolute include roots of the external checkout for the core, absolute config roots).
+
+        The checkout is read only from the named environment variable and must sit at the pinned
+        commit with no change; otherwise this fails closed before any compile."""
+        section = self.external_headers
+        if section is None:
+            return [], []
+        repo_root = self.settings.repo_root
+        variable = section["environment"]
+        checkout = os.environ.get(variable)
+        _require(checkout and os.path.isdir(checkout),
+                 "Cell %s: %s must name the checkout of its external headers" % (self.name, variable))
+        checkout = os.path.realpath(checkout)
+        repo = os.path.realpath(repo_root)
+        inside = os.path.splitdrive(checkout)[0].lower() == os.path.splitdrive(repo)[0].lower() \
+            and os.path.commonpath([checkout, repo]) == repo
+        _require(not inside,
+                 "Cell %s: the checkout %s must lie outside this repository" % (self.name, checkout))
+        head = _git(checkout, ["rev-parse", "HEAD"])
+        _require(head == section["commit"], "Cell %s: checkout %s is at %s, not the pinned commit %s"
+                 % (self.name, checkout, head, section["commit"]))
+        _require(_git(checkout, ["status", "--porcelain"]) == "",
+                 "Cell %s: checkout %s has uncommitted changes" % (self.name, checkout))
+        roots = []
+        for relative in section["include_roots"] + section["core_include_roots"][core]:
+            path = os.path.join(checkout, *relative.split("/"))
+            _require(os.path.isdir(path), "Cell %s: external include root %s is missing" % (self.name, path))
+            roots.append(path)
+        configs = [os.path.join(repo_root, *r.split("/")) for r in section["config_roots"]]
+        return roots, configs
+
+    def cross_cores(self):
+        return list(self.targets.get("arm", {}).get("cross_cores", []))
+
+    def standard_roots(self):
+        """The hosted vocabulary roots: [the pinned fnd-sdk-standard include directory] for a Cell whose
+        comsect1.json declares the standard, then, for a Cell with SDK dependencies, the selected SDK's
+        include directory and its shell membrane. Fails closed on the pin or the SDK selection."""
+        roots = [standard_include_root(self.settings)] if self.adopts_standard else []
+        if self.sdk_dependencies:
+            sdk_policy = self.settings.registry["sdk_dependencies"]
+            variable = sdk_policy["root_environment"]
+            sdk = os.environ.get(variable, "")
+            _require(sdk and os.path.isabs(sdk), "%s must be an absolute SDK directory" % variable)
+            sdk = checked_original_path(sdk)
+            include = os.path.join(sdk, "include")
+            _require(os.path.isfile(os.path.join(include, sdk_policy["vocabulary_header"])),
+                     "%s must identify an SDK with the family vocabulary %s" % (variable, sdk_policy["vocabulary_header"]))
+            membrane = os.path.join(include, *sdk_policy["shell_membrane"].split("/"))
+            _require(os.path.isfile(membrane), "%s must contain the shell public membrane %s"
+                     % (variable, sdk_policy["shell_membrane"]))
+            roots.extend([checked_original_path(include), checked_original_path(os.path.dirname(membrane))])
+        return roots
+
+    def passive_include_roots(self):
+        """Owner source inputs for declared passive vocabulary (cells.json passive_include_roots), absolute."""
+        return [os.path.join(self.settings.repo_root, *root.split("/")) for root in self.passive_roots]
+
+    def dependency_closure(self):
+        """Every Cell this Cell depends on, direct or not, in dependency order, without repeats."""
+        ordered = []
+        for dependency in self.dependencies:
+            for cell in dependency.dependency_closure() + [dependency]:
+                if cell not in ordered:
+                    ordered.append(cell)
+        return ordered
+
+    def linked_cells(self):
+        """Every other Cell whose sources the library of this Cell links, in link order, without repeats:
+        the dependency closure, then the link_with Cells with their own closures."""
+        ordered = []
+        for cell in self.dependency_closure():
+            if cell not in ordered:
+                ordered.append(cell)
+        for extra in self.link_with:
+            for cell in extra.dependency_closure() + [extra]:
+                if cell not in ordered and cell is not self:
+                    ordered.append(cell)
+        return ordered
+
+    def exported_cells(self):
+        """The Cells whose public header the library of this Cell exports, in declaration order."""
+        if self.export_names is None:
+            return [self]
+        return [self.registry_cells[n] for n in self.export_names]
+
+    def owns_library(self):
+        """True for a Cell with library_from and exports: it builds a library of its own name over the
+        binding of the library_from Cell, instead of being tested on that Cell's library."""
+        return self.library_from is not None and self.export_names is not None
+
+    def library_plan(self):
+        """(Cell whose name the library carries, other Cells linked into it, in link order) for
+        `build.py --cell <this>`.
+
+        A Cell without library_from builds its own library over its links. A Cell with library_from
+        and no exports is tested on that Cell's library, whatever that library links. A Cell that owns
+        its library (owns_library) links itself and its links, then the library_from Cell with its
+        links, which define the required operations the freestanding Cells leave open."""
+        if self.library_from is None:
+            return self, self.linked_cells()
+        source = self.registry_cells[self.library_from]
+        if not self.owns_library():
+            return source.library_plan()
+        linked = []
+        for cell in self.linked_cells() + source.linked_cells() + [source]:
+            if cell is not self and cell not in linked:
+                linked.append(cell)
+        return self, linked
+
+    def tested_cells(self):
+        """The Cells whose tests run on the library this Cell's name carries: this Cell, then every
+        Cell tested on it (library_from naming it, without a library of its own), in registry order."""
+        return [self] + [other for other in self.registry_cells.values()
+                         if other.library_from == self.name and not other.owns_library()]
+
+    def dependency_membranes(self):
+        """Membrane directories of the dependency closure, absolute and in order: the only part of a
+        dependency a consumer gets as an include root."""
+        return [os.path.join(cell.root, "membrane") for cell in self.dependency_closure()]
+
+    def external_include_roots(self):
+        """The dependency membranes as repository-relative paths, for the Gate configuration."""
+        repo = self.settings.repo_root
+        return [os.path.relpath(path, repo).replace("\\", "/") for path in self.dependency_membranes()]
+
+    def definition_flags(self):
+        return ["-D%s" % k if v == "1" else "-D%s=%s" % (k, v) for k, v in sorted(self.definitions.items())]
+
+    def _sources(self):
+        found = []
+        for directory, names, files in os.walk(self.root):
+            names.sort()
+            for file_name in sorted(files):
+                if file_name.endswith(".c"):
+                    found.append(os.path.relpath(os.path.join(directory, file_name), self.root).replace("\\", "/"))
+        _require(found, "Cell %s: no .c file below %s" % (self.name, self.root))
+        return sorted(found)
+
+    def _public_header(self, allow_none=False):
+        membrane = os.path.join(self.root, "membrane")
+        exclusions = tuple(self.settings.registry["membrane_header_exclusions"])
+        found = sorted(n for n in os.listdir(membrane) if n.startswith("xpt_") and n.endswith(".h")
+                       and not (exclusions and n.endswith(exclusions))) if os.path.isdir(membrane) else []
+        if allow_none and not found:
+            return None  # a Cell that binds another Cell's required operations publishes none
+        _require(len(found) == 1, "Cell %s: membrane must hold exactly one xpt_*.h, found %s" % (self.name, found))
+        return "membrane/" + found[0]
+
+    def stem_files(self):
+        """Every .c and .h file of the Cell as (cell, relative path, include guard or None)."""
+        found = []
+        for directory, names, files in os.walk(self.root):
+            names.sort()
+            for file_name in sorted(files):
+                if file_name.endswith((".c", ".h")):
+                    path = os.path.join(directory, file_name)
+                    guard = _include_guard(path) if file_name.endswith(".h") else None
+                    found.append((self.name, os.path.relpath(path, self.root).replace("\\", "/"), guard))
+        return found
+
+    def _contract_headers(self):
+        contract = os.path.join(self.root, "contract")
+        found = sorted(n for n in os.listdir(contract) if n.endswith(".h")) if os.path.isdir(contract) else []
+        _require(found, "Cell %s: contract holds no header" % self.name)
+        return ["contract/" + n for n in found]
+
+
+class RustCell:
+    """One validated Rust registry entry plus its derived paths."""
+
+    def __init__(self, name, entry, settings=None):
+        settings = _settings(settings)
+        self.settings = settings
+        prefix = settings.symbol_prefix
+        _require(NAME_PATTERN.fullmatch(name) is not None, "Cell name %r is not one lowercase word" % name)
+        _require(isinstance(entry, dict) and set(entry) == RUST_CELL_KEYS,
+                 "Cell %s must hold %s, found %s" % (name, sorted(RUST_CELL_KEYS),
+                                                     sorted(entry) if isinstance(entry, dict) else entry))
+        self.name = name
+        self.path = entry["path"]
+        segments = self.path.split("/") if isinstance(self.path, str) else []
+        _require(segments and all(NAME_PATTERN.fullmatch(s) is not None for s in segments)
+                 and segments[-1] == name and len(segments) <= 2,
+                 "Cell %s: path %r must be %s or <category>/%s" % (name, self.path, name, name))
+        self.edition = entry["edition"]
+        _require(isinstance(self.edition, str) and EDITION_PATTERN.fullmatch(self.edition) is not None,
+                 "Cell %s: edition %r is not a valid Rust edition" % (name, self.edition))
+        self.depends_on = entry["depends_on"]
+        _require(isinstance(self.depends_on, list) and all(isinstance(v, str) for v in self.depends_on)
+                 and len(set(self.depends_on)) == len(self.depends_on) and name not in self.depends_on,
+                 "Cell %s: depends_on must be a list of other Cell names without duplicates" % name)
+        self.dependencies = []
+        repo = settings.repo_root
+        self.crate_root = os.path.join(repo, "10_pkg", "rust", *segments)
+        self.cell_root = os.path.join(self.crate_root, "cell")
+        self.tests_root = os.path.join(repo, "10_pkg", "test", "rust", *segments)
+        self.provider = name if len(segments) == 2 and segments[0] == PROVIDER_CATEGORY else None
+        self.stem = "%s_provider_%s" % (prefix, name) if self.provider else "%s_%s" % (prefix, name)
+        self.abi_path = os.path.join(self.tests_root, "%s_abi.py" % self.stem)
+        self.test_pattern = "test_%s_*.py" % self.stem
+        self.library_name = "%s.dll" % self.stem
+        self.library_environment = "%s_LIBRARY" % self.stem.upper()
+        self.build_root = os.path.join(repo, "90_temps", "build", "cargo")
+        _require(os.path.isfile(os.path.join(self.crate_root, "Cargo.toml")),
+                 "Cell %s: %s has no Cargo.toml" % (name, self.crate_root))
+        _require(os.path.isfile(os.path.join(self.cell_root, "comsect1.json")),
+                 "Cell %s: %s has no comsect1.json" % (name, self.cell_root))
+        for zone in ("contract", "core", "capability", "membrane"):
+            _require(os.path.isdir(os.path.join(self.cell_root, zone)),
+                     "Cell %s: missing zone directory %s/%s" % (name, self.cell_root, zone))
+        self.sources = self._sources()
+
+    def _sources(self):
+        found = []
+        for directory, names, files in os.walk(self.cell_root):
+            names.sort()
+            for file_name in sorted(files):
+                if file_name.endswith(".rs"):
+                    found.append(os.path.relpath(os.path.join(directory, file_name), self.cell_root).replace("\\", "/"))
+        _require(found, "Cell %s: no .rs file below %s" % (self.name, self.cell_root))
+        return sorted(found)
+
+    def dependency_closure(self):
+        ordered = []
+        for dependency in self.dependencies:
+            for cell in dependency.dependency_closure() + [dependency]:
+                if cell not in ordered:
+                    ordered.append(cell)
+        return ordered
+
+
+def _declares_standard(manifest_path):
+    """Whether a Cell's comsect1.json names the fnd-sdk-standard among its hosted vocabularies."""
+    try:
+        with open(manifest_path, "r", encoding="utf-8") as handle:
+            manifest = json.load(handle)
+    except (OSError, ValueError) as error:
+        raise RegistryError("unreadable Cell manifest %s: %s" % (manifest_path, error))
+    vocabularies = manifest.get("composition_context", {}).get("hosted_vocabularies", [])
+    return any(isinstance(entry, dict) and entry.get("id") == "fnd-sdk-standard" for entry in vocabularies)
+
+
+def _git(checkout, arguments):
+    try:
+        done = subprocess.run(["git", "-C", checkout] + arguments, capture_output=True, text=True,
+                              stdin=subprocess.DEVNULL, timeout=60, creationflags=process.window_flags())
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise RegistryError("git on %s failed: %s" % (checkout, error))
+    _require(done.returncode == 0, "git %s on %s failed: %s" % (" ".join(arguments), checkout, done.stderr.strip()))
+    return done.stdout.strip()
+
+
+def standard_include_root(settings=None):
+    """The include directory of the pinned fnd-sdk-standard checkout, after the pin check: the checkout
+    named by the pin's root_variable lies outside this repository, is at the pinned commit, is clean and
+    holds the public header (fail closed)."""
+    settings = _settings(settings)
+    _require(settings.host_build is not None, "the configuration names no fnd-sdk-standard pin")
+    pin_path = settings.path_of(settings.host_build["standard_pin"])
+    try:
+        with open(pin_path, "r", encoding="utf-8") as handle:
+            pin = json.load(handle)
+    except (OSError, ValueError) as error:
+        raise RegistryError("the fnd-sdk-standard pin is unreadable: %s" % error)
+    root = os.environ.get(pin.get("root_variable", ""), "")
+    _require(root and os.path.isdir(root), "%s does not name the fnd-sdk-standard checkout" % pin.get("root_variable"))
+    checkout, repo = os.path.realpath(root), os.path.realpath(settings.repo_root)
+    inside = os.path.splitdrive(checkout)[0].lower() == os.path.splitdrive(repo)[0].lower() \
+        and os.path.commonpath([checkout, repo]) == repo
+    _require(not inside, "the fnd-sdk-standard checkout %s must lie outside this repository" % checkout)
+    head = _git(root, ["rev-parse", "HEAD"])
+    _require(head == pin.get("commit"), "the fnd-sdk-standard checkout is at %s, the pin is %s" % (head, pin.get("commit")))
+    _require(_git(root, ["status", "--porcelain=v1", "--untracked-files=all"]) == "",
+             "the fnd-sdk-standard checkout is not clean")
+    header = os.path.join(root, *pin["public_header"].split("/"))
+    _require(os.path.isfile(header), "the pinned public header is missing: %s" % header)
+    return os.path.dirname(header)
+
+
+GUARD_PATTERN = re.compile(r"^[ \t]*#[ \t]*ifndef[ \t]+(\w+)[ \t]*\n[ \t]*#[ \t]*define[ \t]+\1\b", re.MULTILINE)
+
+
+def _include_guard(path):
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            match = GUARD_PATTERN.search(handle.read())
+    except (OSError, ValueError) as error:
+        raise RegistryError("unreadable header %s: %s" % (path, error))
+    return match.group(1) if match else None
+
+
+def require_unique_stems(files):
+    """Fail closed when two C files of the Cells share a stem.
+
+    `files` lists (cell, relative path, include guard or None) for every .c and .h
+    file. A stem lives in one folder of one Cell (its .c and .h side by side).
+    The only exception is a header-only stem whose every copy carries the same
+    include guard: a compatible redeclaration of shared vocabulary, which
+    compiles to no object. This syntactic collision check does not establish
+    semantic ownership. Returns the number of distinct stems."""
+    by_stem = {}
+    for cell, path, guard in files:
+        stem = os.path.splitext(os.path.basename(path))[0]
+        by_stem.setdefault(stem, []).append((cell, path, guard))
+    clashes = []
+    for stem, entries in sorted(by_stem.items()):
+        homes = {(cell, os.path.dirname(path)) for cell, path, _guard in entries}
+        sources = ["%s/%s" % (cell, path) for cell, path, _guard in entries if path.endswith(".c")]
+        if len(sources) > 1:
+            clashes.append("%s: %d .c files (%s)" % (stem, len(sources), ", ".join(sources)))
+            continue
+        if len(homes) == 1:
+            continue
+        guards = {guard for _cell, _path, guard in entries}
+        if sources or None in guards or len(guards) != 1:
+            clashes.append("%s: in %s" % (stem, ", ".join("%s/%s" % (c, p) for c, p, _g in entries)))
+    _require(not clashes, "C file stems are not unique across the Cells: %s" % "; ".join(clashes))
+    return len(by_stem)
+
+
+def object_name(key, suffix=".o"):
+    """The file name of the object compiled from the unit `key` (a Cell-relative source path, optionally
+    prefixed with `<cell>:` or a label): `o_<first 16 hex of SHA-256 of the key>` plus the suffix. Fixed
+    length whatever the source path's depth, so a run directory below a deep checkout stays far below
+    MAX_PATH; the cross-build record maps each unit to its object name."""
+    return "o_%s%s" % (hashlib.sha256(key.encode("utf-8")).hexdigest()[:16], suffix)
+
+
+def external_symbols(nm_text):
+    """The external-linkage symbols an object defines, from GNU nm output (`nm --defined-only`):
+    every symbol whose type letter is upper case, except U (undefined)."""
+    found = set()
+    for line in nm_text.splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and len(parts[-2]) == 1 and parts[-2].isupper() and parts[-2] != "U":
+            found.add(parts[-1])
+    return sorted(found)
+
+
+def require_unique_symbols(defined):
+    """Fail closed when two compiled units define one external-linkage symbol.
+
+    `defined` maps a unit label (for example `port/core/port/smo_x_port.c`) to the
+    external symbols its object defines. Returns the number of distinct symbols."""
+    owners = {}
+    for unit, symbols in sorted(defined.items()):
+        for symbol in symbols:
+            owners.setdefault(symbol, []).append(unit)
+    clashes = ["%s (%s)" % (symbol, ", ".join(units)) for symbol, units in sorted(owners.items()) if len(units) > 1]
+    _require(not clashes, "external symbols are defined more than once across the Cells: %s" % "; ".join(clashes))
+    return len(owners)
+
+
+def _require_acyclic(cell, trail):
+    _require(cell.name not in trail, "Cell dependency cycle: %s" % " -> ".join(trail + [cell.name]))
+    for dependency in cell.dependencies:
+        _require_acyclic(dependency, trail + [cell.name])
+
+
+def require_provider_dependencies(cells):
+    """Fail closed when a Provider Cell depends on anything but a library Cell: a freestanding Cell that
+    is no Provider, depends on nothing and binds nothing."""
+    for cell in cells.values():
+        if cell.provider:
+            for dependency in cell.dependencies:
+                _require(dependency.provider is None and not dependency.depends_on and dependency.library_from is None
+                         and dependency.export_names is None and dependency.freestanding,
+                         "Cell %s: a Provider Cell depends only on library Cells, not on %s" % (cell.name, dependency.name))
+
+
+def _read(settings):
+    try:
+        with open(settings.registry_path(), "r", encoding="utf-8") as handle:
+            return json.load(handle)
+    except (OSError, ValueError) as error:
+        raise RegistryError("registry unreadable: %s" % error)
+
+
+def _load_rust(settings, raw):
+    _require(isinstance(raw, dict) and set(raw) == {"cells"} and isinstance(raw["cells"], dict) and raw["cells"],
+             "registry must hold a non-empty 'cells' object")
+    cells = {name: RustCell(name, entry, settings) for name, entry in raw["cells"].items()}
+    paths = [cell.path for cell in cells.values()]
+    _require(len(set(paths)) == len(paths), "registry cells must have distinct paths")
+    for cell in cells.values():
+        cell.registry_cells = cells
+        for dependency in cell.depends_on:
+            _require(dependency in cells, "Cell %s depends on unknown Cell %r" % (cell.name, dependency))
+            cell.dependencies.append(cells[dependency])
+    for cell in cells.values():
+        _require_acyclic(cell, [])
+    return {"cells": cells}
+
+
+def load_registry(settings=None):
+    """The validated registry: {'cores': {...}, 'cells': {name: Cell}} (Rust: {'cells': {name: RustCell}})."""
+    settings = _settings(settings)
+    raw = _read(settings)
+    if settings.language == "rust":
+        return _load_rust(settings, raw)
+    _keys(raw, {"cores", "cells"}, "registry")
+    cores = raw["cores"]
+    _require(isinstance(cores, dict) and (cores or "arm" not in settings.registry["target_names"])
+             and all(isinstance(v, list) and all(isinstance(f, str) for f in v) for v in cores.values()),
+             "registry cores must map core names to flag lists")
+    _require(isinstance(raw["cells"], dict) and raw["cells"], "registry cells must be a non-empty object")
+    cells = {name: Cell(name, entry, cores, settings) for name, entry in raw["cells"].items()}
+    paths = [cell.path for cell in cells.values()]
+    _require(len(set(paths)) == len(paths), "registry cells must have distinct paths")
+    require_unique_stems([entry for cell in cells.values() for entry in cell.stem_files()])
+    for cell in cells.values():
+        cell.registry_cells = cells
+        for other in cell.link_with_names:
+            _require(other in cells and other != cell.name, "Cell %s: link_with names unknown Cell %r" % (cell.name, other))
+            cell.link_with.append(cells[other])
+        if cell.library_from is not None:
+            _require(cell.library_from in cells, "Cell %s: library_from names unknown Cell %r" % (cell.name, cell.library_from))
+    for cell in cells.values():
+        for dependency in cell.depends_on:
+            _require(dependency in cells, "Cell %s depends on unknown Cell %r" % (cell.name, dependency))
+            cell.dependencies.append(cells[dependency])
+    for cell in cells.values():
+        _require_acyclic(cell, [])
+    require_provider_dependencies(cells)
+    for cell in cells.values():
+        if cell.owns_library():
+            source = cells[cell.library_from]
+            _require(not source.freestanding and cell not in source.linked_cells(),
+                     "Cell %s: library_from %s must be a hosted binding Cell that does not link it"
+                     % (cell.name, source.name))
+        elif cell.library_from is not None:
+            source = cells[cell.library_from]
+            _require(cell in source.linked_cells() or cell in source.exported_cells(),
+                     "Cell %s: library_from %s does not link it" % (cell.name, source.name))
+        # With owned_library_links_binding, an owned library also exports from its hosted binding.
+        allowed = [cell] + (cell.library_plan()[1] if cell.owns_library()
+                            and settings.registry["owned_library_links_binding"] else cell.linked_cells())
+        for exported in cell.exported_cells():
+            _require(exported in allowed, "Cell %s: exports %s, which its library does not link" % (cell.name, exported.name))
+            _require(exported.public_header is not None, "Cell %s: exports %s, which has no public header"
+                     % (cell.name, exported.name))
+        if cell.freestanding:
+            for dependency in cell.dependency_closure():
+                _require(dependency.freestanding, "Cell %s is freestanding but depends on hosted Cell %s"
+                         % (cell.name, dependency.name))
+    return {"cores": cores, "cells": cells}
+
+
+def get_cell(name, settings=None):
+    cells = load_registry(settings)["cells"]
+    if name not in cells:
+        raise RegistryError("unknown Cell %r (registry holds: %s)" % (name, ", ".join(sorted(cells))))
+    return cells[name]

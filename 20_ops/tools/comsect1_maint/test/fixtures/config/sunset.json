@@ -1,0 +1,53 @@
+{
+  "schema": "comsect1.maint_config.v1",
+  "product": {
+    "id": "sunset",
+    "symbol_prefix": "wsb",
+    "environment_prefix": "WSB",
+    "image_record_product": "wsb"
+  },
+  "language": "c",
+  "registry": {
+    "path": "20_ops/tools/cells.json",
+    "target_names": [
+      "windows"
+    ],
+    "provider_budget_required": "cross_build_only",
+    "owned_library_links_binding": false,
+    "membrane_header_exclusions": [],
+    "sdk_dependencies": {
+      "allowed": [
+        "wsb_shell"
+      ],
+      "root_environment": "WSB_SDK_ROOT",
+      "required_for_path_prefix": "provider/",
+      "vocabulary_header": "wsb_provider.h",
+      "shell_membrane": "shell/membrane/xpt_wsb_shell.h"
+    }
+  },
+  "host_build": {
+    "compiler_bin_dir": "C:/msys64/ucrt64/bin",
+    "standard_pin": "10_pkg/components/fnd_sdk_standard.json",
+    "image_target": "windows-x86_64",
+    "provider_family": {
+      "kind": "hook"
+    },
+    "sdk_link_libraries": [
+      {
+        "environment": "WSB_SDK_ROOT",
+        "member": "lib/windows-x86_64/libwsb_shell.a"
+      }
+    ],
+    "provider_export_aliases": [
+      "wsb_provider_negotiate",
+      "wsb_provider_open"
+    ]
+  },
+  "cross_build": null,
+  "native_gate": {
+    "config": "20_ops/tools/native_gate_config.json"
+  },
+  "hooks": {
+    "module": "20_ops/tools/product_hooks.py"
+  }
+}

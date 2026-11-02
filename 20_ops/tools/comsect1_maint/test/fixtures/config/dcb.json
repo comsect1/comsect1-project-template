@@ -1,0 +1,62 @@
+{
+  "schema": "comsect1.maint_config.v1",
+  "product": {
+    "id": "dcb",
+    "symbol_prefix": "dcb",
+    "environment_prefix": "DCB",
+    "image_record_product": "dcb"
+  },
+  "language": "c",
+  "registry": {
+    "path": "20_ops/tools/cells.json",
+    "target_names": [
+      "windows",
+      "arm"
+    ],
+    "provider_budget_required": "always",
+    "owned_library_links_binding": false,
+    "membrane_header_exclusions": [],
+    "sdk_dependencies": null
+  },
+  "host_build": {
+    "compiler_bin_dir": "C:/msys64/ucrt64/bin",
+    "standard_pin": "10_pkg/components/fnd_sdk_standard.json",
+    "image_target": "windows-x86_64",
+    "provider_family": {
+      "kind": "negotiate_offers",
+      "offers": [
+        [
+          "communication",
+          1,
+          1
+        ],
+        [
+          "port",
+          2,
+          1
+        ]
+      ]
+    },
+    "sdk_link_libraries": [],
+    "provider_export_aliases": []
+  },
+  "cross_build": {
+    "toolchain_bin_dir": "C:/Program Files/Arm/GNU Toolchain mingw-w64-x86_64-arm-none-eabi/bin",
+    "common_flags": [
+      "-ffreestanding",
+      "-nostdlib",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-pedantic",
+      "-Os",
+      "-ffunction-sections",
+      "-fdata-sections",
+      "-fno-ident"
+    ]
+  },
+  "native_gate": {
+    "config": "20_ops/tools/native_gate_config.json"
+  },
+  "hooks": null
+}

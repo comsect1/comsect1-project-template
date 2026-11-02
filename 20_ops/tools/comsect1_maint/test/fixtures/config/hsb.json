@@ -1,0 +1,17 @@
+{
+  "schema": "comsect1.maint_config.v1",
+  "product": {
+    "id": "hsb",
+    "symbol_prefix": "hsb",
+    "environment_prefix": "HSB",
+    "image_record_product": "hsb"
+  },
+  "language": "rust",
+  "registry": {
+    "path": "20_ops/tools/cells.json"
+  },
+  "host_build": null,
+  "cross_build": null,
+  "native_gate": null,
+  "hooks": null
+}

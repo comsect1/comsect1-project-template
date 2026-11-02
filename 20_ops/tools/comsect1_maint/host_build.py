@@ -1,0 +1,892 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Kim Hyeongjeong (comsect1)
+"""Build one Cell into a shared library for Python-driven verification.
+
+Python standard library only. The library is a product artifact: the exported
+symbol set equals the functions declared in the Cell's public membrane header
+(`membrane/xpt_*.h`). The ABI mirror `10_pkg/test/c/<path>/<prefix>_<cell>_abi.py`
+is checked by the C compiler with a compile-only `_Static_assert` probe. No
+executable is ever produced. All output goes to `90_temps/build/<cell>/<run-id>/`.
+The Cell list, standard, definitions, include roots and dependencies come from
+the registry; the compiler folder, the fnd-sdk-standard pin, the image target,
+the Provider family rule, SDK link libraries and export aliases from
+`maint_config.json` `host_build`; product logic that is not data from the
+hooks of `product_hooks.py`.
+
+A Cell that `depends_on` another Cell links that Cell's sources into its
+library. Each Cell is compiled with its own standard, definitions and include
+roots; the consumer additionally sees the membrane of every dependency as an
+include root and nothing else of it. The exports are still the functions of the
+consumer's own public header only.
+
+A hosted Cell that binds the required operations of another Cell is the test
+library of that Cell (`library_from`); `exports` lists the Cells whose public
+header the library exports, `link_libraries` the system import libraries.
+`--run-tests` runs the tests of the Cell and of every Cell whose library it
+carries, against the one library. A Cell with both `library_from` and
+`exports` owns its library (the product runtime library).
+
+A Provider Cell (`provider/<name>`) builds its test image
+`<prefix>_provider_<name>.dll`: it exports the static registration
+`<prefix>_provider_<name>_registration` (as data) and the functions of its
+membrane header, and gets its image build record beside it. Every library that
+links Provider Cells exports their registrations as data and gets an image
+build record with one row per Provider (its family from `provider_family`).
+
+Every object of the library is listed with `nm`, and two units that define the
+same external-linkage symbol fail the build (registry.require_unique_symbols).
+A gcc command line longer than Windows accepts is passed through a response
+file, recorded under `gcc_response_files`.
+
+    python -I -B 20_ops/tools/build.py --cell <name> [--run-id ID] [--run-tests]
+                                      [--sanitize address|undefined] [--accept-tool-drift]
+
+Prints `<stem>_library: <path>`; with `--run-tests` it then runs the Python
+tests of the Cell with `<STEM>_LIBRARY` set to that path. Any failure exits
+non-zero with a reason on stderr (fail closed).
+
+`--sanitize` builds a memory-safety verification variant of the same library;
+it is never a product. The exported set, the ABI probe and the build record are
+those of the plain build, and the record names the variant under `sanitize`:
+
+- `undefined`: gcc with `-fsanitize=undefined` in trap mode (no runtime; a
+  finding executes an illegal instruction, which ctypes reports as an OSError
+  0xC000001D, or the process ends).
+- `address`: MSVC `cl /fsanitize=address` with the dynamic ASan runtime of the
+  same toolset, copied beside the library so a Python process loads it with the
+  library. The ABI is also probed with cl. Test fixtures stay gcc-built test input.
+"""
+
+import argparse
+import ctypes
+import hashlib
+import importlib.util
+import json
+import os
+import re
+import subprocess
+import sys
+
+from . import config as maint_config
+from . import process
+from . import registry
+
+_SETTINGS = maint_config.current() if maint_config.present() else None
+_HOST = _SETTINGS.host_build if _SETTINGS is not None and _SETTINGS.language == "c" else None
+# The product's host compiler (None in the template, which has no configuration).
+GCC_BIN_DIR = os.path.normpath(_HOST["compiler_bin_dir"]) if _HOST else None
+GCC_PATH = os.path.join(GCC_BIN_DIR, "gcc.exe") if _HOST else None
+OBJDUMP_PATH = os.path.join(GCC_BIN_DIR, "objdump.exe") if _HOST else None
+NM_PATH = os.path.join(GCC_BIN_DIR, "nm.exe") if _HOST else None
+
+# The standard comes from the registry (no GNU extensions); the warning set is the build bar.
+WARNING_FLAGS = ["-Wall", "-Wextra", "-Werror", "-pedantic"]
+
+# A library link is reproducible: no PE time stamp, and a fixed image base instead of the one the
+# linker derives from the output path (the run directory). The same sources give the same bytes.
+REPRODUCIBLE_LINK_FLAGS = ["-Wl,--no-insert-timestamp", "-Wl,--disable-auto-image-base", "-Wl,--gc-sections"]
+
+# Unit compilation optimization flags: speed optimization (-O2) with per-function/per-data sections
+# and no compiler .ident strings so --gc-sections removes unreferenced code/data cleanly.
+OPTIMIZE_FLAGS = ["-O2", "-ffunction-sections", "-fdata-sections", "-fno-ident"]
+
+TOOLS_ROOT = process.TOOLS_ROOT
+TOOL_TIMEOUT_SECONDS = 300
+# A gcc command line at or beyond this length goes through a response file (CreateProcess limit 32767).
+RESPONSE_FILE_THRESHOLD = 28000
+
+# Memory-safety verification variants (--sanitize). UBSan in trap mode needs no runtime; float casts are
+# checked too (an out-of-range float-to-integer conversion is undefined in C).
+SANITIZERS = ("address", "undefined")
+UBSAN_FLAGS = ["-fsanitize=undefined,float-cast-overflow", "-fsanitize-trap=all", "-fno-sanitize-recover=all"]
+# MSVC installations searched for an ASan-capable toolset (newest first); nothing is installed or changed.
+MSVC_ROOTS = [r"C:\Program Files\Microsoft Visual Studio", r"C:\Program Files (x86)\Microsoft Visual Studio"]
+ASAN_RUNTIME = "clang_rt.asan_dynamic-x86_64.dll"
+MSVC_WARNING_FLAGS = ["/W4", "/WX"]
+# Symbols MSVC emits as external COMDAT in every unit that uses them (string literals, float constants,
+# ASan bookkeeping); they are merged by the linker and are not definitions of a Cell.
+MSVC_COMPILER_SYMBOL = re.compile(r"^(\?\?_C@|__real@|__xmm@|__ymm@|__asan|__odr_asan|_volmd$|\.)")
+
+REPO_ROOT = registry.REPO_ROOT
+RUN_ID_PATTERN = registry.RUN_ID_PATTERN
+RegistryError = registry.RegistryError
+get_cell = registry.get_cell
+STANDARD_PIN_PATH = registry.STANDARD_PIN_PATH
+IMAGE_TARGET = _HOST["image_target"] if _HOST else None
+REGISTRATION_PATTERN = re.compile(r"^%s_provider_([a-z][a-z0-9]*(?:_[a-z0-9]+)*)_registration$"
+                                  % re.escape(_SETTINGS.symbol_prefix)) if _HOST else None
+
+
+class BuildError(Exception):
+    """A build step failed; the message is the reason."""
+
+
+def _settings():
+    if _SETTINGS is None or _HOST is None:
+        raise BuildError("maint_config.json configures no C host build")
+    return _SETTINGS
+
+
+def gcc_present():
+    return GCC_PATH is not None and os.path.isfile(GCC_PATH)
+
+
+def new_run_id(prefix="build"):
+    return process.new_run_id(prefix)
+
+
+def _child_env(tmp_dir):
+    env = dict(os.environ)
+    env["PATH"] = GCC_BIN_DIR + os.pathsep + env.get("PATH", "")
+    env["TMP"] = env["TEMP"] = env["TMPDIR"] = tmp_dir
+    return env
+
+
+def _gcc_response_command(args, cwd):
+    """Retain exact long GCC arguments without exceeding Windows CreateProcess limits."""
+    if os.name != "nt" or GCC_PATH is None or os.path.normcase(os.path.abspath(args[0])) != os.path.normcase(GCC_PATH):
+        return args
+    if len(subprocess.list2cmdline(args)) < RESPONSE_FILE_THRESHOLD:
+        return args
+    encoded = json.dumps(args, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    stem = "gcc_" + hashlib.sha256(encoded).hexdigest()[:20]
+    response = os.path.join(cwd, "tmp", stem + ".rsp")
+    content = "".join('"' + arg.replace("\\", "\\\\").replace('"', '\\"') + '"\n' for arg in args[1:])
+    with open(response, "x", encoding="utf-8", newline="\n") as handle:
+        handle.write(content)
+    command = [args[0], "@" + response]
+    with open(os.path.join(cwd, "tmp", stem + ".json"), "x", encoding="utf-8", newline="\n") as handle:
+        json.dump({"argv": args, "command": command, "response_file": response,
+                   "response_sha256": hashlib.sha256(content.encode("utf-8")).hexdigest()}, handle, indent=2)
+        handle.write("\n")
+    return command
+
+
+def _run(args, env, cwd, what):
+    command = _gcc_response_command(args, cwd)
+    try:
+        done = subprocess.run(command, env=env, cwd=cwd, capture_output=True, text=True,
+                              stdin=subprocess.DEVNULL, timeout=TOOL_TIMEOUT_SECONDS,
+                              creationflags=process.window_flags())
+    except subprocess.TimeoutExpired:
+        raise BuildError("%s timed out after %d s" % (what, TOOL_TIMEOUT_SECONDS))
+    except OSError as error:
+        raise BuildError("%s could not start: %s" % (what, error))
+    if done.returncode != 0:
+        raise BuildError("%s failed (exit %d):\n%s%s" % (what, done.returncode, done.stdout, done.stderr))
+    return done
+
+
+def parse_sanitize(text):
+    """The sanitizer variant named by --sanitize ("address" or "undefined"), or None. Both at once are
+    refused: no toolchain provides ASan and UBSan for Windows together."""
+    if text is None:
+        return None
+    names = sorted(set(part.strip() for part in text.split(",") if part.strip()))
+    unknown = [name for name in names if name not in SANITIZERS]
+    if not names or unknown:
+        raise BuildError("unknown sanitizer %r (choose from %s)" % (text, ", ".join(SANITIZERS)))
+    if len(names) > 1:
+        raise BuildError("address and undefined are separate variants: ASan comes from MSVC cl, which has no "
+                         "UBSan, and UBSan from gcc in trap mode, which has no ASan runtime for Windows")
+    return names[0]
+
+
+def _msvc_vcvars():
+    """vcvars64.bat of the newest installed MSVC toolset that ships the dynamic ASan runtime, or None."""
+    found = []
+    for root in MSVC_ROOTS:
+        if not os.path.isdir(root):
+            continue
+        for release in os.listdir(root):
+            for edition in (os.listdir(os.path.join(root, release)) if os.path.isdir(os.path.join(root, release)) else []):
+                vcvars = os.path.join(root, release, edition, "VC", "Auxiliary", "Build", "vcvars64.bat")
+                tools = os.path.join(root, release, edition, "VC", "Tools", "MSVC")
+                if not os.path.isfile(vcvars) or not os.path.isdir(tools):
+                    continue
+                for version in os.listdir(tools):
+                    if os.path.isfile(os.path.join(tools, version, "bin", "Hostx64", "x64", ASAN_RUNTIME)):
+                        found.append((tuple(int(p) for p in re.findall(r"\d+", version)), release, vcvars, version))
+    if not found:
+        return None
+    found.sort(reverse=True)
+    return found[0][2], found[0][3]
+
+
+def msvc_environment(tmp_dir):
+    """The child environment of vcvars64 for the ASan-capable toolset, with the paths of cl, link and the
+    ASan runtime. Fails closed when no such toolset is installed."""
+    located = _msvc_vcvars()
+    if located is None:
+        raise BuildError("no MSVC toolset with %s is installed: ASan is unavailable" % ASAN_RUNTIME)
+    vcvars, version = located
+    try:
+        done = subprocess.run('call "%s" -vcvars_ver=%s >nul && set' % (vcvars, version), shell=True,
+                              capture_output=True, text=True, errors="replace", stdin=subprocess.DEVNULL,
+                              timeout=TOOL_TIMEOUT_SECONDS, creationflags=process.window_flags())
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise BuildError("vcvars64 could not run: %s" % error)
+    env = dict(line.split("=", 1) for line in done.stdout.splitlines() if "=" in line and not line.startswith("="))
+    tools = env.get("VCToolsInstallDir")
+    if done.returncode != 0 or not tools:
+        raise BuildError("vcvars64 failed (exit %d): %s" % (done.returncode, done.stderr.strip()))
+    bin_dir = os.path.join(tools, "bin", "Hostx64", "x64")
+    paths = {"cl": os.path.join(bin_dir, "cl.exe"), "link": os.path.join(bin_dir, "link.exe"),
+             "asan_runtime": os.path.join(bin_dir, ASAN_RUNTIME), "version": env.get("VCToolsVersion", version)}
+    for key in ("cl", "link", "asan_runtime"):
+        if not os.path.isfile(paths[key]):
+            raise BuildError("the MSVC toolset lacks %s" % paths[key])
+    env["TMP"] = env["TEMP"] = tmp_dir
+    return env, paths
+
+
+def _msvc_unit_command(paths, unit_cell, includes, extra):
+    """cl flags of one unit: the Cell's standard, the warnings as errors, its definitions.
+    `includes` is the gcc form ("-I", root, ...), joined to one argument per root."""
+    joined = ["/I" + root for flag, root in zip(includes[0::2], includes[1::2]) if flag == "-I"]
+    if len(joined) * 2 != len(includes):
+        raise BuildError("unexpected include arguments for cl: %s" % includes)
+    return ([paths["cl"], "/nologo", "/std:%s" % unit_cell.standard, "/TC"] + MSVC_WARNING_FLAGS
+            + unit_cell.definition_flags() + joined + extra)
+
+
+def _strip_comments(text):
+    return re.sub(r"/\*.*?\*/|//[^\n]*", "", text, flags=re.DOTALL)
+
+
+def header_functions(cell):
+    """Function names declared in the public header, in declaration order. A Provider Cell's public header
+    may declare none: its static registration is its whole surface."""
+    header_path = os.path.join(cell.root, cell.public_header)
+    with open(header_path, "r", encoding="utf-8") as handle:
+        text = _strip_comments(handle.read())
+    names = re.findall(r"^[A-Za-z_][\w \t\*]*?\b(%s\w+)[ \t]*\(" % re.escape(cell.function_prefix),
+                       text, flags=re.MULTILINE)
+    if (not names and not cell.provider) or len(set(names)) != len(names):
+        raise BuildError("public header yields no function set or a duplicate: %s" % header_path)
+    return names
+
+
+def _load_abi(cell):
+    if not os.path.isfile(cell.abi_path):
+        raise BuildError("ABI mirror missing: %s" % cell.abi_path)
+    spec = importlib.util.spec_from_file_location("%s_%s_abi_probe" % (cell.settings.symbol_prefix, cell.name),
+                                                  cell.abi_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _probe_key(c_name):
+    """The macro key of a probed type: its typedef name, or its struct tag ("struct x" -> X)."""
+    return c_name.replace("struct ", "").upper()
+
+
+def _probe_source(cell, abi):
+    lines = ["/* Compile-time ABI probe: no code, no executable. */"]
+    lines.extend('#include "%s"' % name for name in cell.contract_headers)
+    lines.append("")
+    for c_name, layout in abi.struct_layout().items():
+        key = _probe_key(c_name)
+        lines.append('_Static_assert(sizeof(%s) == EXPECT_SIZE_%s, "size of %s");' % (c_name, key, c_name))
+        for member in layout["offsets"]:
+            lines.append('_Static_assert(offsetof(%s, %s) == EXPECT_OFFSET_%s_%s, "offset of %s.%s");'
+                         % (c_name, member, key, member.upper(), c_name, member))
+    for name in abi.CONSTANTS:
+        lines.append('_Static_assert(EXPECT_CONST_%s_OK, "value of %s");' % (name, name))
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _probe_definitions(abi):
+    defs = []
+    for c_name, layout in abi.struct_layout().items():
+        key = _probe_key(c_name)
+        defs.append("-DEXPECT_SIZE_%s=%du" % (key, layout["size"]))
+        for member, offset in layout["offsets"].items():
+            defs.append("-DEXPECT_OFFSET_%s_%s=%du" % (key, member.upper(), offset))
+    for name, value in abi.CONSTANTS.items():
+        if value < 0:
+            check = "((long long)(%s) == (%dLL))" % (name, value)
+        else:
+            check = "((unsigned long long)(%s) == %dULL)" % (name, value)
+        defs.append("-DEXPECT_CONST_%s_OK=%s" % (name, check))
+    return defs
+
+
+def _exported_names(dll_path, env, cwd):
+    if OBJDUMP_PATH is None or not os.path.isfile(OBJDUMP_PATH):
+        raise BuildError("objdump is absent: cannot verify the exported symbol set (%s)" % OBJDUMP_PATH)
+    out = _run([OBJDUMP_PATH, "-p", dll_path], env, cwd, "objdump").stdout
+    return _export_table(out, dll_path)
+
+
+def _export_table(objdump_text, dll_path):
+    """The exported names of `objdump -p` output (its Ordinal/Name Pointer table)."""
+    if "[Ordinal/Name Pointer] Table" not in objdump_text:
+        raise BuildError("objdump shows no export table for %s" % dll_path)
+    table = objdump_text.split("[Ordinal/Name Pointer] Table", 1)[1]
+    return re.findall(r"^\s*\[\s*\d+\]\s+\+base\[\s*\d+\]\s+[0-9a-fA-F]+\s+(\S+)\s*$", table,
+                      flags=re.MULTILINE)
+
+
+def _unit_flags(unit_cell):
+    return [GCC_PATH, "-std=%s" % unit_cell.standard] + WARNING_FLAGS + unit_cell.definition_flags()
+
+
+def _unit_includes(unit_cell):
+    includes = []
+    for root in unit_cell.include_roots:
+        includes += ["-I", os.path.normpath(os.path.join(unit_cell.root, root))]
+    for membrane in unit_cell.dependency_membranes():
+        includes += ["-I", membrane]
+    for root in unit_cell.passive_include_roots() + unit_cell.standard_roots():
+        includes += ["-I", root]
+    return includes
+
+
+def standard_include_root():
+    """The include directory of the pinned fnd-sdk-standard checkout (registry.standard_include_root,
+    failing as a BuildError): a fixture is compiled against nothing else of the standard."""
+    try:
+        return registry.standard_include_root(_settings())
+    except RegistryError as error:
+        raise BuildError(str(error))
+
+
+def export_aliases(cell, settings=None):
+    """[(alias, target)] of `host_build.provider_export_aliases` for a Provider Cell: an alias
+    `<prefix>_provider_<operation>` exports `<stem>_<operation>` under the common name."""
+    settings = settings or _settings()
+    if not cell.provider:
+        return []
+    base = "%s_provider_" % settings.symbol_prefix
+    pairs = []
+    for alias in settings.host_build["provider_export_aliases"]:
+        if not alias.startswith(base) or len(alias) == len(base):
+            raise BuildError("export alias %s must start with %s" % (alias, base))
+        pairs.append((alias, "%s_%s" % (cell.stem, alias[len(base):])))
+    return pairs
+
+
+def definition_text(cell, providers, functions, aliases):
+    """The .def file: the registrations of the linked Providers as data, the alias exports, the functions."""
+    lines = ["LIBRARY %s\n" % cell.library_name, "EXPORTS\n"]
+    lines += ["    %s DATA\n" % provider.registration for provider in providers]
+    lines += ["    %s = %s\n" % pair for pair in aliases]
+    lines += ["    %s\n" % name for name in functions]
+    return "".join(lines)
+
+
+class _StaticRegistration(ctypes.Structure):
+    # comsect1_static_registration (comsect1_provider.h), read from the built image.
+    _fields_ = [("struct_size", ctypes.c_uint32), ("reserved", ctypes.c_uint32), ("name", ctypes.c_char_p),
+                ("negotiate", ctypes.c_void_p), ("open", ctypes.c_void_p), ("describe", ctypes.c_void_p),
+                ("describe_length", ctypes.c_uint64)]
+
+
+class _HostDescriptor(ctypes.Structure):
+    # comsect1_host_descriptor (comsect1_provider.h).
+    _fields_ = [("struct_size", ctypes.c_uint32), ("family", ctypes.c_uint32), ("interface_major", ctypes.c_uint16),
+                ("interface_minimum_minor", ctypes.c_uint16), ("interface_maximum_minor", ctypes.c_uint16),
+                ("pointer_bits", ctypes.c_uint16), ("target", ctypes.c_char_p)]
+
+
+class _ModuleDescriptor(ctypes.Structure):
+    # comsect1_module_descriptor (comsect1_provider.h).
+    _fields_ = [("struct_size", ctypes.c_uint32), ("family", ctypes.c_uint32), ("interface_major", ctypes.c_uint16),
+                ("interface_minor", ctypes.c_uint16), ("flags", ctypes.c_uint32),
+                ("implementation_version", ctypes.c_char_p)]
+
+
+_NEGOTIATE = ctypes.CFUNCTYPE(ctypes.c_int32, ctypes.POINTER(_HostDescriptor), ctypes.POINTER(_ModuleDescriptor))
+
+
+def _provider_family(registration, name):
+    """The family a statically bound Provider's negotiate serves (the Foundation family travels in
+    negotiation; a describe document names none). `negotiate_offers`: each configured family is offered
+    in turn, in configuration order; `hook`: the product's `provider_family(registration, name)`."""
+    settings = _settings()
+    rule = settings.host_build["provider_family"]
+    if rule["kind"] == "hook":
+        try:
+            family = settings.hook("provider_family")(registration, name)
+        except maint_config.ConfigError as error:
+            raise BuildError(str(error))
+        if not isinstance(family, str) or not family:
+            raise BuildError("the registration of Provider %s negotiates no %s family"
+                             % (name, settings.environment_prefix))
+        return family
+    negotiate = _NEGOTIATE(registration.negotiate) if registration.negotiate else None
+    for family, number, major in rule["offers"] if negotiate is not None else ():
+        host = _HostDescriptor(struct_size=ctypes.sizeof(_HostDescriptor), family=number, interface_major=major,
+                               interface_minimum_minor=0, interface_maximum_minor=0xFFFF,
+                               pointer_bits=ctypes.sizeof(ctypes.c_void_p) * 8, target=IMAGE_TARGET.encode("ascii"))
+        module = _ModuleDescriptor(struct_size=ctypes.sizeof(_ModuleDescriptor))
+        if negotiate(ctypes.byref(host), ctypes.byref(module)) == 0 and module.family == number:
+            return family
+    raise BuildError("the registration of Provider %s negotiates no %s family" % (name, settings.environment_prefix))
+
+
+def _write_image_record(tested, fixture_path, exported, digest, compiled_inputs=None):
+    """The image build record (fnd-sdk-standard image_build_record.schema.json) of a fixture image
+    that links statically bound Providers: one row per <prefix>_provider_<name>_registration it exports,
+    the registration's own describe giving the values layout. Returns the record file name, or None
+    for a fixture that links no Provider."""
+    settings = _settings()
+    names = sorted(match.group(1) for match in map(REGISTRATION_PATTERN.match, exported) if match)
+    if not names:
+        return None
+    inputs = compiled_inputs
+    if inputs is None:
+        sources = sorted(n for n in os.listdir(tested.fixture_root) if n.endswith((".c", ".h")))
+        inputs = []
+        for name in sources:
+            path = os.path.join(tested.fixture_root, name)
+            with open(path, "rb") as handle:
+                inputs.append({"path": os.path.relpath(path, REPO_ROOT).replace("\\", "/"),
+                               "sha256": hashlib.sha256(handle.read()).hexdigest()})
+    image = ctypes.CDLL(fixture_path)
+    providers = []
+    for name in names:
+        registration_name = "%s_provider_%s_registration" % (settings.symbol_prefix, name)
+        registration = _StaticRegistration.in_dll(image, registration_name)
+        if registration.name is None or registration.name.decode("ascii") != name or not registration.describe:
+            raise BuildError("the registration of Provider %s names another Provider or no describe" % name)
+        describe = json.loads(ctypes.string_at(registration.describe, registration.describe_length).decode("utf-8"))
+        providers.append({
+            "name": name,
+            "family": _provider_family(registration, name),
+            "registration": registration_name,
+            "interface_version": {"major": 1, "minor": 0},
+            "implementation_version": "0.0.0-0",
+            "digest_of": "sources",
+            "inputs": inputs,
+            "values": {"size": describe["values"]["size"], "alignment": describe["values"]["alignment"]},
+        })
+    stem = os.path.splitext(os.path.basename(fixture_path))[0]
+    record = {"file_format_version": 1, "schema": "comsect1.image_build_record", "name": stem,
+              "product": settings.image_record_product, "target": IMAGE_TARGET,
+              "image": {"path": os.path.basename(fixture_path), "sha256": digest}, "providers": providers}
+    record_name = stem + ".image.json"
+    with open(os.path.join(os.path.dirname(fixture_path), record_name), "w", encoding="utf-8",
+              newline="\n") as handle:
+        json.dump(record, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+    return record_name
+
+
+def _write_cell_image_record(stem, providers, library_path, digest):
+    """The image build record of a library that links Provider Cells (`<stem>.image.json` beside it): one
+    row per Provider, its family the one its negotiate serves, its inputs the .c and .h files of the Cell
+    and of the library Cells it compiles in, the values layout from its describe."""
+    settings = _settings()
+    image = ctypes.CDLL(library_path)
+    rows = []
+    for cell in sorted(providers, key=lambda item: item.provider):
+        inputs = []
+        # The Provider's own files and those of the libraries it compiles in.
+        for owner, relative in [(unit, relative) for unit in cell.dependency_closure() + [cell]
+                                for _cell, relative, _guard in unit.stem_files()]:
+            path = os.path.join(owner.root, *relative.split("/"))
+            with open(path, "rb") as handle:
+                inputs.append({"path": os.path.relpath(path, REPO_ROOT).replace("\\", "/"),
+                               "sha256": hashlib.sha256(handle.read()).hexdigest()})
+        inputs.sort(key=lambda item: item["path"].encode("utf-8"))
+        registration = _StaticRegistration.in_dll(image, cell.registration)
+        if registration.name is None or registration.name.decode("ascii") != cell.provider or not registration.describe:
+            raise BuildError("%s names another Provider or carries no describe" % cell.registration)
+        describe = json.loads(ctypes.string_at(registration.describe, registration.describe_length).decode("utf-8"))
+        rows.append({"name": cell.provider, "family": _provider_family(registration, cell.provider),
+                     "registration": cell.registration,
+                     "interface_version": {"major": 1, "minor": 0}, "implementation_version": "0.0.0-0",
+                     "digest_of": "sources", "inputs": inputs,
+                     "values": {"size": describe["values"]["size"], "alignment": describe["values"]["alignment"]}})
+    record = {"file_format_version": 1, "schema": "comsect1.image_build_record", "name": stem,
+              "product": settings.image_record_product, "target": IMAGE_TARGET,
+              "image": {"path": os.path.basename(library_path), "sha256": digest}, "providers": rows}
+    record_name = stem + ".image.json"
+    with open(os.path.join(os.path.dirname(library_path), record_name), "w", encoding="utf-8", newline="\n") as handle:
+        json.dump(record, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+    return record_name
+
+
+def _build_fixture(tested, cell, run_dir, object_dir, env):
+    """Build the test-only fixture library of `tested` (registry `test_fixture`) beside the library
+    of `cell` that carries its tests, and return its record entry.
+
+    The fixture is test input, never a product: its C sources live under the Cell's tests, it sees
+    the membranes of the Cells the carrying library exports with their dependency membranes and
+    passive vocabulary (the public header a Provider is built against), and it exports every
+    external symbol it defines (MinGW automatic export), so the tests reach its static
+    registrations as data. It is compiled with the Cell's standard and the warnings, linked with
+    -shared, and never linked into the product library. It includes the pinned fnd-sdk-standard
+    header as a Provider author does (standard_include_root checks the pin first); a fixture that
+    links statically bound Providers gets its image build record beside it. An explicit
+    fixture_units selection also compiles actual owner units with the owner's private headers."""
+    includes = ["-I", standard_include_root()]
+    if tested.link_fixture:
+        # A board double defines the operations the Cell itself requires: it sees that Cell's membrane
+        # (which publishes them) and the membranes of its dependencies, nothing else.
+        for membrane in [os.path.join(tested.root, "membrane")] + tested.dependency_membranes():
+            includes += ["-I", membrane]
+    for exported in cell.exported_cells():
+        includes += ["-I", os.path.join(exported.root, "membrane")]
+    for exported in cell.exported_cells():
+        for root in exported.dependency_membranes() + exported.passive_include_roots():
+            includes += ["-I", root]
+    if tested.fixture_units:
+        includes += _unit_includes(tested)
+    sources = [(name, os.path.join(tested.fixture_root, name)) for name in tested.fixture_sources]
+    sources += [(name, os.path.join(tested.root, *name.split("/"))) for name in tested.fixture_units]
+    objects = []
+    for name, source_path in sources:
+        object_path = os.path.join(object_dir, registry.object_name("fixture:%s:%s" % (tested.name, name)))
+        _run(_unit_flags(tested) + ["-O2", "-c"] + includes + ["-o", object_path, source_path],
+             env, run_dir, "compile fixture %s/%s" % (tested.name, name))
+        objects.append(object_path)
+    fixture_path = os.path.join(run_dir, tested.fixture_library_name)
+    _run([GCC_PATH, "-shared", "-static-libgcc", "-o", fixture_path] + objects, env, run_dir, "fixture link")
+    with open(fixture_path, "rb") as handle:
+        digest = hashlib.sha256(handle.read()).hexdigest()
+    exported = sorted(_exported_names(fixture_path, env, run_dir))
+    entry = {"library": tested.fixture_library_name, "library_sha256": digest,
+             "sources": [os.path.relpath(path, REPO_ROOT).replace("\\", "/") for _, path in sources],
+             "exported": exported}
+    if tested.fixture_units:
+        paths = {path for _, path in sources}
+        paths.update(os.path.join(tested.fixture_root, name) for name in os.listdir(tested.fixture_root)
+                     if name.endswith(".h"))
+        paths.update(os.path.join(owner.root, *relative.split("/"))
+                     for owner in tested.dependency_closure() + [tested]
+                     for _, relative, _ in owner.stem_files() if relative.endswith(".h"))
+        entry["inputs"] = []
+        for path in sorted(paths):
+            with open(path, "rb") as source:
+                entry["inputs"].append({"path": os.path.relpath(path, REPO_ROOT).replace("\\", "/"),
+                                        "sha256": hashlib.sha256(source.read()).hexdigest()})
+    image_record = _write_image_record(tested, fixture_path, exported, digest, entry.get("inputs"))
+    if image_record is not None:
+        entry["image_record"] = image_record
+    return entry
+
+
+def _response_file(path, args):
+    """Write the arguments of a cl command to a response file (one quoted argument per line)."""
+    with open(path, "w", encoding="utf-8", newline="\n") as handle:
+        for arg in args:
+            handle.write('"%s"\n' % arg.replace('"', '\\"'))
+    return "@" + path
+
+
+def _execute(kind, command, env, cwd, what, context):
+    """Run one compile or link command: through the product's `run_command` hook when it defines one
+    (for example to observe the command), else directly."""
+    hook = _hook("run_command")
+    if hook is None:
+        return _run(command, env, cwd, what)
+    return hook(kind, _gcc_response_command(command, cwd) if command[0] == GCC_PATH else command,
+                env, cwd, what, context)
+
+
+def _hook(name, required=False):
+    try:
+        return _settings().hook(name, required)
+    except maint_config.ConfigError as error:
+        raise BuildError(str(error))
+
+
+def build_library(cell_name, run_id, sanitize=None, accept_tool_drift=False):
+    """Build the Cell library into a new run directory; returns the library path.
+
+    A Cell with `library_from` (its required operations are bound by another Cell) is built as the
+    library of that Cell; with `exports` as well it builds its own library over that Cell's binding
+    (registry.Cell.library_plan). The library links the Cell, its dependency closure and its
+    `link_with` Cells; it exports the public functions of the Cells named by `exports` (default: the
+    Cell). `sanitize` ("address" or "undefined") builds the memory-safety verification variant. The
+    maintainer tools must match their template manifest unless `accept_tool_drift`."""
+    settings = _settings()
+    if sanitize is not None and sanitize not in SANITIZERS:
+        raise BuildError("unknown sanitizer %r" % sanitize)
+    try:
+        tools = maint_config.maintainer_tools(settings.repo_root, accept_tool_drift, settings.language)
+    except maint_config.ConfigError as error:
+        raise BuildError(str(error))
+    requested = get_cell(cell_name)
+    cell, linked = requested.library_plan()
+    if "windows" not in cell.targets:
+        if "arm" in settings.registry["target_names"]:
+            raise BuildError("Cell %s has no windows target and no host library: it is verified by "
+                             "cross_build.py and gate.py --target arm" % cell.name)
+        raise BuildError("Cell %s has no Windows host library" % cell.name)
+    if sanitize == "address" and cell.link_fixture:
+        raise BuildError("Cell %s links a gcc-built board fixture; its ASan variant is not built" % cell.name)
+    if sanitize is not None and any(unit.sdk_dependencies for unit in [cell] + linked):
+        raise BuildError("the selected precompiled SDK libraries are not sanitizer-instrumented")
+    if not gcc_present():
+        raise BuildError("gcc is absent: %s" % GCC_PATH)
+    if not RUN_ID_PATTERN.fullmatch(run_id):
+        raise BuildError("run id %r does not match %s" % (run_id, RUN_ID_PATTERN.pattern))
+    # Every Cell whose layout is probed: the exported ones, the built one and every Cell tested on it.
+    probed = []
+    for probe_cell in cell.exported_cells() + cell.tested_cells():
+        if probe_cell not in probed:
+            probed.append(probe_cell)
+    for unit_cell in [cell] + linked:
+        for name in unit_cell.sources + unit_cell.contract_headers:
+            if not os.path.isfile(os.path.join(unit_cell.root, name)):
+                raise BuildError("Cell file missing: %s/%s" % (unit_cell.name, name))
+    for exported in cell.exported_cells():
+        if not os.path.isfile(os.path.join(exported.root, exported.public_header)):
+            raise BuildError("Cell file missing: %s/%s" % (exported.name, exported.public_header))
+
+    functions = []
+    for exported in cell.exported_cells():
+        functions.extend(header_functions(exported))
+    if len(set(functions)) != len(functions):
+        raise BuildError("the exported public headers declare a function twice")
+    abis = {probe_cell.name: _load_abi(probe_cell) for probe_cell in probed}
+
+    run_dir = os.path.join(cell.build_root, run_id)
+    for part in (os.path.join(REPO_ROOT, "90_temps"), os.path.join(REPO_ROOT, "90_temps", "build")):
+        if process.is_link(part):
+            raise BuildError("refusing a linked output root: %s" % part)
+    os.makedirs(cell.build_root, exist_ok=True)
+    if process.is_link(cell.build_root) or os.path.realpath(cell.build_root) != os.path.abspath(cell.build_root):
+        raise BuildError("refusing a linked output root: %s" % cell.build_root)
+    try:
+        os.mkdir(run_dir)
+    except FileExistsError:
+        raise BuildError("run directory already exists: %s" % run_dir)
+    tmp_dir = os.path.join(run_dir, "tmp")
+    os.mkdir(tmp_dir)
+    env = _child_env(tmp_dir)
+    standard_flag = "-std=%s" % cell.standard
+    definitions = cell.definition_flags()
+    msvc_env = msvc_paths = None
+    if sanitize == "address":
+        msvc_env, msvc_paths = msvc_environment(tmp_dir)
+    sanitize_gcc = UBSAN_FLAGS if sanitize == "undefined" else []
+    msvc_unit_flags = ["/O2", "/Z7", "/MD", "/fsanitize=address"]
+
+    # ABI probes: compile only (-fsyntax-only), so no object or executable exists. One probe per
+    # probed Cell, built with that Cell's own flags and include roots.
+    for probe_cell in probed:
+        probe_path = os.path.join(run_dir, "abi_probe.c" if probe_cell is cell else "abi_probe_%s.c" % probe_cell.name)
+        with open(probe_path, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(_probe_source(probe_cell, abis[probe_cell.name]))
+        probe_includes = ["-I", probe_cell.root]
+        for membrane in probe_cell.dependency_membranes():
+            probe_includes += ["-I", membrane]
+        for root in probe_cell.passive_include_roots() + probe_cell.standard_roots():
+            probe_includes += ["-I", root]
+        _run(_unit_flags(probe_cell) + ["-fsyntax-only"] + probe_includes
+             + _probe_definitions(abis[probe_cell.name]) + [probe_path],
+             env, run_dir, "ABI probe of %s (mirror disagrees with the C header)" % probe_cell.name)
+        if msvc_paths is not None:
+            # The ASan variant is compiled by cl: its layout is probed by cl too (/Zs: syntax only).
+            response = _response_file(os.path.join(tmp_dir, os.path.basename(probe_path)[:-2] + ".msvc.rsp"),
+                                      _msvc_unit_command(msvc_paths, probe_cell, probe_includes,
+                                                         _probe_definitions(abis[probe_cell.name]) + ["/Zs", probe_path])[1:])
+            _run([msvc_paths["cl"], response], msvc_env, run_dir,
+                 "cl ABI probe of %s (mirror disagrees with the C header under MSVC)" % probe_cell.name)
+
+    # Product input capture (an SDK receipt) before any Provider library is compiled.
+    providers = [unit for unit in [cell] + linked if unit.provider]
+    inputs_required = settings.registry["sdk_dependencies"] is not None
+    inputs_begin = _hook("build_inputs_begin", inputs_required) if providers else None
+    inputs_end = _hook("build_inputs_end", inputs_required) if providers else None
+    inputs_token = inputs_begin(cell, run_dir) if inputs_begin is not None else None
+
+    # Export list derived from the public headers only, and the static registration of every Provider Cell
+    # the library links, as data, plus the configured alias exports of a Provider's own image.
+    aliases = export_aliases(cell, settings)
+    def_path = os.path.join(run_dir, cell.definition_file)
+    with open(def_path, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write(definition_text(cell, providers, functions, aliases))
+    functions = [provider.registration for provider in providers] + functions + [alias for alias, _ in aliases]
+
+    library_path = os.path.join(run_dir, cell.library_name)
+    object_dir = os.path.join(tmp_dir, "objects")
+    os.mkdir(object_dir)
+    objects = []
+    defined = {}
+    if NM_PATH is None or not os.path.isfile(NM_PATH):
+        raise BuildError("nm is absent: cannot verify the external symbols are unique (%s)" % NM_PATH)
+    # Linked Cells first, then the Cell itself; each unit is compiled with its own Cell's flags.
+    for unit_cell in linked + [cell]:
+        unit_flags = _unit_flags(unit_cell)
+        unit_includes = _unit_includes(unit_cell)
+        for name in unit_cell.sources:
+            source_path = os.path.join(unit_cell.root, *name.split("/"))
+            context = {"cell": unit_cell, "source": source_path, "includes": unit_includes, "flags": unit_flags}
+            if msvc_paths is not None:
+                object_path = os.path.join(object_dir, registry.object_name("%s:%s" % (unit_cell.name, name),
+                                                                           ".obj"))
+                context["object"] = object_path
+                _execute("compile", _msvc_unit_command(msvc_paths, unit_cell, unit_includes, msvc_unit_flags
+                                                       + ["/c", "/Fo" + object_path, source_path]),
+                         msvc_env, run_dir, "cl %s/%s" % (unit_cell.name, name), context)
+            else:
+                object_path = os.path.join(object_dir, registry.object_name("%s:%s" % (unit_cell.name, name)))
+                context["object"] = object_path
+                _execute("compile", unit_flags + OPTIMIZE_FLAGS + sanitize_gcc + ["-c"] + unit_includes
+                         + ["-o", object_path, source_path],
+                         env, run_dir, "compile %s/%s" % (unit_cell.name, name), context)
+            objects.append(object_path)
+            symbols = registry.external_symbols(
+                _run([NM_PATH, "--defined-only", object_path], env, run_dir, "nm %s/%s" % (unit_cell.name, name)).stdout)
+            if msvc_paths is not None:
+                symbols = [symbol for symbol in symbols if not MSVC_COMPILER_SYMBOL.match(symbol)]
+            defined["%s/%s" % (unit_cell.name, name)] = symbols
+    try:
+        symbol_count = registry.require_unique_symbols(defined)
+    except RegistryError as error:
+        raise BuildError(str(error))
+    # The system import libraries every linked Cell names (a library over a binding Cell needs its).
+    libraries = []
+    for unit_cell in [cell] + linked:
+        libraries += ["-l%s" % name for name in unit_cell.link_libraries if "-l%s" % name not in libraries]
+    # Precompiled SDK libraries a Cell with SDK dependencies links (host_build.sdk_link_libraries).
+    if any(unit.sdk_dependencies for unit in [cell] + linked):
+        for library in settings.host_build["sdk_link_libraries"]:
+            root = os.environ.get(library["environment"], "")
+            if not root or not os.path.isabs(root):
+                raise BuildError("%s must name the SDK for %s" % (library["environment"], library["member"]))
+            libraries.append(os.path.join(root, *library["member"].split("/")))
+    # A fixture that defines the Cell's own required operations (link_fixture) is built first and the
+    # library links against it; it is test input and its symbols stay out of the export list.
+    fixtures = {}
+    if cell.link_fixture:
+        fixtures[cell.name] = _build_fixture(cell, cell, run_dir, object_dir, env)
+        libraries.append(os.path.join(run_dir, cell.fixture_library_name))
+    runtime_sha256 = None
+    link_context = {"cell": cell, "objects": objects, "definition": def_path, "libraries": libraries,
+                    "library": library_path}
+    if msvc_paths is not None:
+        system_libraries = []
+        for unit_cell in [cell] + linked:
+            system_libraries += ["%s.lib" % name for name in unit_cell.link_libraries
+                                 if "%s.lib" % name not in system_libraries]
+        link_context["libraries"] = system_libraries
+        _execute("link", [msvc_paths["link"], "/nologo", "/DLL", "/INCREMENTAL:NO", "/DEBUG", "/DEF:" + def_path,
+                          "/OUT:" + library_path, "/IMPLIB:" + os.path.join(tmp_dir, cell.stem + ".lib"),
+                          "/PDB:" + os.path.join(tmp_dir, cell.stem + ".pdb")] + objects + system_libraries,
+                 msvc_env, run_dir, "MSVC library link", link_context)
+        # The dynamic ASan runtime of the same toolset, beside the library: a process that loads the
+        # library resolves it from the library's directory.
+        runtime_copy = os.path.join(run_dir, ASAN_RUNTIME)
+        with open(msvc_paths["asan_runtime"], "rb") as source, open(runtime_copy, "wb") as target:
+            data = source.read()
+            target.write(data)
+        runtime_sha256 = hashlib.sha256(data).hexdigest()
+    else:
+        _execute("link", [GCC_PATH, "-shared", "-O2", "-static-libgcc"] + sanitize_gcc + REPRODUCIBLE_LINK_FLAGS
+                 + ["-o", library_path, def_path] + objects + libraries,
+                 env, run_dir, "library link", link_context)
+
+    exported = _exported_names(library_path, env, run_dir)
+    if sorted(exported) != sorted(functions):
+        raise BuildError("exported symbols differ from the headers: extra=%s missing=%s"
+                         % (sorted(set(exported) - set(functions)), sorted(set(functions) - set(exported))))
+
+    for tested in cell.tested_cells():
+        if tested.test_fixture is not None and tested.name not in fixtures:
+            fixtures[tested.name] = _build_fixture(tested, cell, run_dir, object_dir, env)
+
+    stray = [name for name in os.listdir(run_dir)
+             if name.lower().endswith((".exe", ".o", ".obj", ".a"))]
+    if stray:
+        raise BuildError("unexpected build products in the run directory: %s" % stray)
+
+    with open(library_path, "rb") as handle:
+        digest = hashlib.sha256(handle.read()).hexdigest()
+    image_record = _write_cell_image_record(cell.stem, providers, library_path, digest) if providers else None
+    if inputs_end is not None:
+        inputs_end(inputs_token, cell, library_path, image_record)
+    record = {
+        "run_id": run_id,
+        "cell": cell.name,
+        "compiler": msvc_paths["cl"] if msvc_paths is not None else GCC_PATH,
+        "depends_on": [dependency.name for dependency in cell.dependency_closure()],
+        "linked": [linked_cell.name for linked_cell in linked],
+        "exports": [exported_cell.name for exported_cell in cell.exported_cells()],
+        "flags": (["/std:%s" % cell.standard, "/TC"] + MSVC_WARNING_FLAGS + definitions + msvc_unit_flags
+                  if msvc_paths is not None else [standard_flag] + WARNING_FLAGS + definitions + OPTIMIZE_FLAGS + sanitize_gcc),
+        "library_sha256": digest,
+        "exported": sorted(exported),
+        "abi_probe": "passed",
+        "unique_external_symbols": symbol_count,
+        "struct_layout": abis[cell.name].struct_layout(),
+        "constants": abis[cell.name].CONSTANTS,
+        "probed": {probe_cell.name: {"struct_layout": abis[probe_cell.name].struct_layout(),
+                                     "constants": abis[probe_cell.name].CONSTANTS}
+                   for probe_cell in probed},
+        "fixtures": fixtures,
+        "gcc_response_files": [json.loads(open(os.path.join(tmp_dir, name), encoding="utf-8").read())
+                               for name in sorted(os.listdir(tmp_dir))
+                               if name.startswith("gcc_") and name.endswith(".json")],
+        "maintainer_tools": tools,
+    }
+    if image_record is not None:
+        record["image_record"] = image_record
+    if sanitize is not None:
+        record["sanitize"] = {"variant": sanitize, "fixtures_sanitized": False}
+        if msvc_paths is not None:
+            record["sanitize"].update({"toolset": msvc_paths["version"], "abi_probe_msvc": "passed",
+                                       "runtime": ASAN_RUNTIME, "runtime_sha256": runtime_sha256})
+        else:
+            record["sanitize"]["mode"] = "trap"
+    evidence = _hook("build_evidence")
+    if evidence is not None:
+        record = evidence(cell, run_dir, record)
+        if not isinstance(record, dict):
+            raise BuildError("the build_evidence hook returned no record")
+    with open(os.path.join(run_dir, "build_record.json"), "w", encoding="utf-8", newline="\n") as handle:
+        json.dump(record, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+    return library_path
+
+
+def main(argv):
+    parser = argparse.ArgumentParser(description="Build one Cell as a shared library.")
+    parser.add_argument("--cell", required=True, help="Cell name of the registry")
+    parser.add_argument("--run-id", default=None)
+    parser.add_argument("--run-tests", action="store_true",
+                        help="run the Python tests of the Cell against the built library")
+    parser.add_argument("--sanitize", default=None,
+                        help="memory-safety variant: address (MSVC ASan) or undefined (gcc UBSan, trap mode)")
+    parser.add_argument("--accept-tool-drift", action="store_true",
+                        help="build although the maintainer tools differ from their template manifest (recorded)")
+    args = parser.parse_args(argv)
+    try:
+        cell = get_cell(args.cell)
+        sanitize = parse_sanitize(args.sanitize)
+        library = build_library(cell.name, args.run_id or new_run_id(), sanitize, args.accept_tool_drift)
+    except (BuildError, RegistryError) as error:
+        sys.stderr.write("build: FAIL: %s\n" % error)
+        return 1
+    print("%s_library: %s" % (cell.stem, library))
+    if not args.run_tests:
+        return 0
+    # The Cells whose tests run: the requested one and, when it carries their library, the bound Cells
+    # (not a Cell that owns a library of its own over this one's binding).
+    code = 0
+    for test_cell in cell.tested_cells():
+        env = dict(os.environ)
+        env[test_cell.library_environment] = library
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
+        if sanitize == "address":
+            # Stop at the first report; leak detection is not supported by the Windows runtime.
+            env.setdefault("ASAN_OPTIONS", "halt_on_error=1:detect_leaks=0")
+        try:
+            done = subprocess.run([sys.executable, "-I", "-B", "-m", "unittest", "discover", "-v",
+                                   "-s", test_cell.tests_root, "-p", test_cell.test_pattern],
+                                  env=env, stdin=subprocess.DEVNULL, timeout=TOOL_TIMEOUT_SECONDS * 2,
+                                  creationflags=process.window_flags())
+        except subprocess.TimeoutExpired:
+            sys.stderr.write("build: FAIL: tests of %s timed out\n" % test_cell.name)
+            return 1
+        code = max(code, done.returncode)
+    return code
