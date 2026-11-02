@@ -21,8 +21,11 @@ The lane configuration selects the clang resource in one of two shapes:
 manifest's every member is hashed, locked for the run and the closure may only
 read admitted resource headers); `{"resource_dir", "required_major",
 "clang_candidates"}` discovers clang and checks its resource directory.
-`publications` (optional, default none) selects SDK publication roots whose
-inputs `comsect1-native-input` binds to their publication record.
+`publications` (optional) selects the input owner protocol: when the member is
+present (even `[]`), each `comsect1-native-input` call names the original
+source Cells of its external inputs (`--source-cell`) and the selected SDK
+publication roots (`--publication`), which needs a native-input that accepts
+them; when it is absent, external inputs are passed by id only.
 
 Exit codes (tool codes, not Gate codes; the Gate exit code is recorded in the
 summary). With `--lane both` the highest code of the lanes is returned.
@@ -214,7 +217,6 @@ def load_config(path):
                     and all(part not in ("", ".", "..") and not part.endswith((" ", "."))
                             for part in member.split("/")),
                     "publication.%s must be an unaliased relative member" % key)
-    config["publications"] = publications
     clang = config["clang_resource"]
     require(isinstance(clang, dict), "clang_resource must be an object")
     if set(clang) == set(MANIFEST_KEYS):
@@ -807,7 +809,7 @@ def run_native_lane(config, paths, cell, units, clang, resource_include, lane_di
                    "--snapshot", lane_dir / ("snapshot-" + cid), "--receipt", receipt]
         for key, path in inputs_of[cid].items():
             command += ["--input", "%s=%s" % (key, path)]
-        sources, publications = input_owner_selection(config, inputs_of[cid], cell)
+        sources, publications = input_owner_selection(config, inputs_of[cid], cell)             if "publications" in config else ([], [])
         for source in sources:
             command += ["--source-cell", source]
         for index, publication in enumerate(publications):

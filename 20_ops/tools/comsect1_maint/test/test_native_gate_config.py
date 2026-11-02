@@ -27,7 +27,7 @@ class LaneConfigTest(unittest.TestCase):
     def test_discovery_shape(self):
         config = self.load(BASE, "discovery")
         self.assertEqual(config["_clang_mode"], "discovery")
-        self.assertEqual(config["publications"], [])
+        self.assertNotIn("publications", config)
 
     def test_manifest_shape_with_publications(self):
         value = dict(BASE, clang_resource=MANIFEST, publications=[
