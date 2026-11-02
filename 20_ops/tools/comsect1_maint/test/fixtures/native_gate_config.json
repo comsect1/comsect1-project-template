@@ -8,7 +8,8 @@
       "native_input": "comsect1-native-input.exe",
       "c_frontend": "comsect1-c-frontend.exe",
       "libclang": "libclang.dll"
-    }
+    },
+    "frontend_standards": ["c99", "c11", "c17"]
   },
   "expected_sha256": {
     "gate": "01d875b5cf99e106bbda4d03c7e003903f5148b86d6ab0f3c0ef37338be17fdb",
@@ -18,7 +19,7 @@
   },
   "build": {
     "target": "x86_64-pc-windows-msvc",
-    "standard": "c11",
+    "standard": "c23",
     "plain_char": "signed",
     "virtual_root": "C:/native",
     "preprocessing_epoch_seconds": 0,

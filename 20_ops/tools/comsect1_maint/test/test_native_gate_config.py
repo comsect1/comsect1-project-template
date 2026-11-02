@@ -53,6 +53,20 @@ class LaneConfigTest(unittest.TestCase):
             self.load(dict(BASE, publications=[{"canonical_root": "C:/sdk", "inventory_member": "../x",
                                                 "declaration_member": "d.json"}]), "publication")
 
+
+    def test_analysis_standard_follows_the_frontend(self):
+        self.assertEqual(driver.analysis_standard(self.load(BASE, "c23")), "c17")
+        c11 = dict(BASE, build=dict(BASE["build"], standard="c11"))
+        self.assertEqual(driver.analysis_standard(self.load(c11, "c11")), "c11")
+        full = dict(BASE, gate_set=dict(BASE["gate_set"], frontend_standards=["c17", "c23"]))
+        self.assertEqual(driver.analysis_standard(self.load(full, "full")), "c23")
+        newer = dict(c11, gate_set=dict(BASE["gate_set"], frontend_standards=["c17", "c23"]))
+        with self.assertRaisesRegex(driver.ToolError, "none of them at or below"):
+            self.load(newer, "newer")
+        for name, value in (("empty", []), ("unknown", ["c89"]), ("twice", ["c17", "c17"])):
+            with self.subTest(frontend=name), self.assertRaisesRegex(driver.ToolError, "frontend_standards"):
+                self.load(dict(BASE, gate_set=dict(BASE["gate_set"], frontend_standards=value)), name)
+
     def test_unknown_member_is_refused(self):
         with self.assertRaisesRegex(driver.ToolError, "exactly the members"):
             self.load(dict(BASE, extra=True), "extra")

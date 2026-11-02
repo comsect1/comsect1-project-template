@@ -92,7 +92,7 @@ def c_cell(product, path, prefix, header=True, contract="pvo_%s.h", manifest=Non
 
 
 def c_entry(path, targets=("windows",), **extra):
-    entry = {"path": path, "standard": "c11", "definitions": {}, "include_roots": ["."], "depends_on": [],
+    entry = {"path": path, "standard": "c23", "definitions": {}, "include_roots": ["."], "depends_on": [],
              "freestanding": True, "targets": {}}
     for target in targets:
         entry["targets"][target] = {"gate": {"target": "x86_64-pc-windows-msvc", "plain_char": "signed"}}

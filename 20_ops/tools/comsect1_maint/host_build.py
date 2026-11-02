@@ -103,6 +103,8 @@ UBSAN_FLAGS = ["-fsanitize=undefined,float-cast-overflow", "-fsanitize-trap=all"
 MSVC_ROOTS = [r"C:\Program Files\Microsoft Visual Studio", r"C:\Program Files (x86)\Microsoft Visual Studio"]
 ASAN_RUNTIME = "clang_rt.asan_dynamic-x86_64.dll"
 MSVC_WARNING_FLAGS = ["/W4", "/WX"]
+# The cl spelling of a registry standard: cl has no /std:c23 and selects C23 as /std:clatest.
+MSVC_STANDARD_FLAGS = {"c11": "/std:c11", "c17": "/std:c17", "c23": "/std:clatest"}
 # Symbols MSVC emits as external COMDAT in every unit that uses them (string literals, float constants,
 # ASan bookkeeping); they are merged by the linker and are not definitions of a Cell.
 MSVC_COMPILER_SYMBOL = re.compile(r"^(\?\?_C@|__real@|__xmm@|__ymm@|__asan|__odr_asan|_volmd$|\.)")
@@ -240,13 +242,20 @@ def msvc_environment(tmp_dir):
     return env, paths
 
 
+def msvc_standard_flag(unit_cell):
+    """The cl flag of the Cell's standard (MSVC_STANDARD_FLAGS); a standard cl cannot select is refused."""
+    if unit_cell.standard not in MSVC_STANDARD_FLAGS:
+        raise BuildError("Cell %s: cl has no flag for standard %s" % (unit_cell.name, unit_cell.standard))
+    return MSVC_STANDARD_FLAGS[unit_cell.standard]
+
+
 def _msvc_unit_command(paths, unit_cell, includes, extra):
     """cl flags of one unit: the Cell's standard, the warnings as errors, its definitions.
     `includes` is the gcc form ("-I", root, ...), joined to one argument per root."""
     joined = ["/I" + root for flag, root in zip(includes[0::2], includes[1::2]) if flag == "-I"]
     if len(joined) * 2 != len(includes):
         raise BuildError("unexpected include arguments for cl: %s" % includes)
-    return ([paths["cl"], "/nologo", "/std:%s" % unit_cell.standard, "/TC"] + MSVC_WARNING_FLAGS
+    return ([paths["cl"], "/nologo", msvc_standard_flag(unit_cell), "/TC"] + MSVC_WARNING_FLAGS
             + unit_cell.definition_flags() + joined + extra)
 
 
@@ -812,7 +821,7 @@ def build_library(cell_name, run_id, sanitize=None, accept_tool_drift=False):
         "depends_on": [dependency.name for dependency in cell.dependency_closure()],
         "linked": [linked_cell.name for linked_cell in linked],
         "exports": [exported_cell.name for exported_cell in cell.exported_cells()],
-        "flags": (["/std:%s" % cell.standard, "/TC"] + MSVC_WARNING_FLAGS + definitions + msvc_unit_flags
+        "flags": ([msvc_standard_flag(cell), "/TC"] + MSVC_WARNING_FLAGS + definitions + msvc_unit_flags
                   if msvc_paths is not None else [standard_flag] + WARNING_FLAGS + definitions + OPTIMIZE_FLAGS + sanitize_gcc),
         "library_sha256": digest,
         "exported": sorted(exported),

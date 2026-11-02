@@ -138,7 +138,7 @@ class Cell:
                  % (name, self.path, name, name))
         self.standard = entry["standard"]
         _require(isinstance(self.standard, str) and STANDARD_PATTERN.fullmatch(self.standard) is not None,
-                 "Cell %s: standard %r is not like c11" % (name, self.standard))
+                 "Cell %s: standard %r is not like c23" % (name, self.standard))
         self.definitions = entry["definitions"]
         _require(isinstance(self.definitions, dict)
                  and all(isinstance(k, str) and isinstance(v, str) for k, v in self.definitions.items()),

@@ -21,6 +21,12 @@ The lane configuration selects the clang resource in one of two shapes:
 manifest's every member is hashed, locked for the run and the closure may only
 read admitted resource headers); `{"resource_dir", "required_major",
 "clang_candidates"}` discovers clang and checks its resource directory.
+`gate_set.frontend_standards` lists the ISO C editions the installed C
+frontend accepts. The lane analyses a Cell with its build standard when the
+frontend accepts it, otherwise with the newest accepted edition older than it
+(recorded as `analysis_standard` beside `standard`): source written in their
+common subset parses alike, and a construct of the newer edition only fails
+the lane closed.
 `publications` (optional) selects the input owner protocol: when the member is
 present (even `[]`), each `comsect1-native-input` call names the original
 source Cells of its external inputs (`--source-cell`) and the selected SDK
@@ -89,6 +95,8 @@ EXIT_NAMES = {
 }
 
 TOOL_KEYS = ("gate", "native_input", "c_frontend", "libclang")
+# ISO C editions, oldest first (C17 is ISO/IEC 9899:2018, C23 ISO/IEC 9899:2024).
+STANDARDS = ("c99", "c11", "c17", "c23")
 CONFIG_KEYS = ("gate_set", "expected_sha256", "build", "clang_resource", "timeouts_seconds")
 MANIFEST_KEYS = ("manifest", "manifest_sha256")
 DISCOVERY_KEYS = ("resource_dir", "required_major", "clang_candidates")
@@ -155,10 +163,15 @@ def load_config(path):
     require(isinstance(config, dict), "configuration must be an object")
     check_keys(config, "configuration", CONFIG_KEYS + (("publications",) if "publications" in config else ()))
     gate_set = config["gate_set"]
-    check_keys(gate_set, "gate_set", ("runtime_root", "active_set_file", "binary_subdirectory", "binaries"))
+    check_keys(gate_set, "gate_set", ("runtime_root", "active_set_file", "binary_subdirectory", "binaries",
+                                      "frontend_standards"))
     for key in ("runtime_root", "active_set_file", "binary_subdirectory"):
         require(isinstance(gate_set[key], str) and gate_set[key], "gate_set.%s must be a non-empty string" % key)
     check_keys(gate_set["binaries"], "gate_set.binaries", TOOL_KEYS)
+    accepted = gate_set["frontend_standards"]
+    require(isinstance(accepted, list) and accepted and all(isinstance(s, str) and s in STANDARDS for s in accepted)
+            and len(set(accepted)) == len(accepted),
+            "gate_set.frontend_standards must be a non-empty list of distinct standards of %s" % ", ".join(STANDARDS))
     for key in TOOL_KEYS:
         name = gate_set["binaries"][key]
         require(isinstance(name, str) and name and Path(name).name == name, "gate_set.binaries.%s must be a file name" % key)
@@ -173,7 +186,8 @@ def load_config(path):
                                 "external_include_roots", "system_include_roots"))
     for key in ("target", "virtual_root"):
         require(isinstance(build[key], str) and build[key], "build.%s must be a non-empty string" % key)
-    require(build["standard"] in ("c99", "c11", "c17"), "build.standard must be c99, c11 or c17")
+    require(build["standard"] in STANDARDS, "build.standard must be c99, c11, c17 or c23")
+    analysis_standard(config)
     require(build["plain_char"] in ("signed", "unsigned"), "build.plain_char must be signed or unsigned")
     require(isinstance(build["preprocessing_epoch_seconds"], int) and not isinstance(build["preprocessing_epoch_seconds"], bool)
             and build["preprocessing_epoch_seconds"] >= 0, "build.preprocessing_epoch_seconds must be a non-negative integer")
@@ -590,9 +604,22 @@ def system_directories(config):
     return result
 
 
+def analysis_standard(config):
+    """The standard the lane analyses with: the build standard when the installed frontend accepts it, else the
+    newest accepted edition older than it; refused when the frontend accepts none at or below it."""
+    standard = config["build"]["standard"]
+    accepted = config["gate_set"]["frontend_standards"]
+    if standard in accepted:
+        return standard
+    older = [s for s in STANDARDS[:STANDARDS.index(standard)] if s in accepted]
+    require(older, "the Gate frontend accepts %s, none of them at or below build.standard %s"
+            % (", ".join(accepted), standard))
+    return older[-1]
+
+
 def compile_flags(config, roots):
     build = config["build"]
-    flags = ["--target=" + build["target"], "-std=" + build["standard"], "-ffreestanding",
+    flags = ["--target=" + build["target"], "-std=" + analysis_standard(config), "-ffreestanding",
              "-f%s-char" % build["plain_char"]]
     for name, value in build["definitions"].items():
         flags.append("-D%s=%s" % (name, value))
@@ -645,7 +672,7 @@ def configuration_for(config, clang, resource_include, roots, cell, entry, cwd):
         "publication_authority_id": None,
         "virtual_root": build["virtual_root"],
         "target": build["target"],
-        "standard": build["standard"],
+        "standard": analysis_standard(config),
         "plain_char": build["plain_char"],
         "forced_includes": [],
         "entry": native_path(entry),
@@ -903,7 +930,8 @@ def run(arguments):
             "run_id": run_id, "lane": arguments.lane, "exit": code, "exit_class": EXIT_NAMES[code],
             "release_set_id": set_id, "tool_sha256": hashes, "tool_hash_mismatch_accepted": accepted,
             "config_sha256": config["_sha256"], "cell_manifest_sha256": sha256_file(cell / "comsect1.json"),
-            "standard": config["build"]["standard"], "target": config["build"]["target"],
+            "standard": config["build"]["standard"], "analysis_standard": analysis_standard(config),
+            "target": config["build"]["target"],
         }
         if manifest_mode:
             summary["native_toolchain"] = config.get("_native_toolchain")
