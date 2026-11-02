@@ -5,16 +5,16 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-function Get-NonCanonicalTrackedText {
+function Get-NonCanonicalText {
     param([Parameter(Mandatory)][string]$RepositoryRoot)
 
-    $rows = & git -C $RepositoryRoot -c core.quotepath=false ls-files --eol
+    $rows = & git -C $RepositoryRoot -c core.quotepath=false ls-files --eol --cached --others --exclude-standard
     if ($LASTEXITCODE -ne 0) {
         throw 'git ls-files --eol failed.'
     }
 
     foreach ($row in $rows) {
-        if ($row -notmatch '^i/\S+\s+w/(?<work>\S+)\s+attr/(?<attributes>.*?)\t(?<path>.*)$') {
+        if ($row -notmatch '^i/\S*\s+w/(?<work>\S+)\s+attr/(?<attributes>.*?)\t(?<path>.*)$') {
             continue
         }
         $workEnding = $Matches.work
@@ -34,6 +34,10 @@ function Get-NonCanonicalTrackedText {
             [pscustomobject]@{ Problem = 'NON_UTF8'; Path = $relativePath }
             continue
         }
+        if ($source.Length -ge 3 -and $source[0] -eq 0xef -and $source[1] -eq 0xbb -and $source[2] -eq 0xbf) {
+            [pscustomobject]@{ Problem = 'UTF8_BOM'; Path = $relativePath }
+            continue
+        }
         if ($workEnding -in @('crlf', 'mixed', 'cr')) {
             [pscustomobject]@{ Problem = $workEnding.ToUpperInvariant(); Path = $relativePath }
             continue
@@ -44,7 +48,7 @@ function Get-NonCanonicalTrackedText {
     }
 }
 
-function Convert-TrackedTextToLf {
+function Convert-TextToLf {
     param(
         [Parameter(Mandatory)][string]$RepositoryRoot,
         [Parameter(Mandatory)][string]$RelativePath
@@ -63,7 +67,8 @@ function Convert-TrackedTextToLf {
     $source = [IO.File]::ReadAllBytes($path)
     $result = [IO.MemoryStream]::new($source.Length)
     try {
-        for ($index = 0; $index -lt $source.Length; $index++) {
+        $start = if ($source.Length -ge 3 -and $source[0] -eq 0xef -and $source[1] -eq 0xbb -and $source[2] -eq 0xbf) { 3 } else { 0 }
+        for ($index = $start; $index -lt $source.Length; $index++) {
             if ($source[$index] -eq 13) {
                 if ($index + 1 -lt $source.Length -and $source[$index + 1] -eq 10) {
                     $index++
@@ -88,15 +93,15 @@ if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($repositoryRoot)) {
 }
 $repositoryRoot = (Resolve-Path -LiteralPath $repositoryRoot).Path
 
-$findings = @(Get-NonCanonicalTrackedText -RepositoryRoot $repositoryRoot)
+$findings = @(Get-NonCanonicalText -RepositoryRoot $repositoryRoot)
 if ($findings.Count -eq 0) {
-    Write-Host 'text format: PASS (tracked LF policy files are canonical)'
+    Write-Host 'text format: PASS (tracked and untracked LF policy files are canonical)'
     exit 0
 }
 
 if (-not $Apply) {
     $findings | Format-Table Problem, Path -AutoSize
-    Write-Error "text format: FAIL ($($findings.Count) tracked file(s)); rerun with -Apply to normalize"
+    Write-Error "text format: FAIL ($($findings.Count) file(s)); rerun with -Apply to normalize"
     exit 1
 }
 
@@ -105,15 +110,15 @@ foreach ($finding in $findings) {
         Write-Warning "refusing to guess source encoding for $($finding.Path)"
         continue
     }
-    Convert-TrackedTextToLf -RepositoryRoot $repositoryRoot -RelativePath $finding.Path
+    Convert-TextToLf -RepositoryRoot $repositoryRoot -RelativePath $finding.Path
     Write-Host "normalized $($finding.Path)"
 }
 
-$remaining = @(Get-NonCanonicalTrackedText -RepositoryRoot $repositoryRoot)
+$remaining = @(Get-NonCanonicalText -RepositoryRoot $repositoryRoot)
 if ($remaining.Count -ne 0) {
     $remaining | Format-Table Problem, Path -AutoSize
-    Write-Error "text format: FAIL ($($remaining.Count) tracked file(s) remain noncanonical)"
+    Write-Error "text format: FAIL ($($remaining.Count) file(s) remain noncanonical)"
     exit 1
 }
 
-Write-Host "text format: PASS (normalized $($findings.Count) tracked file(s); changes are not staged)"
+Write-Host "text format: PASS (normalized $($findings.Count) file(s); changes are not staged)"
