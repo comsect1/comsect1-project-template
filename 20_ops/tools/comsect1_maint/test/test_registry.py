@@ -4,6 +4,7 @@
 import copy
 import json
 import os
+import stat
 import unittest
 from unittest import mock
 
@@ -19,6 +20,11 @@ class RegistryTest(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
+        # git writes its object files read only; the fixture Foundation checkouts are made writable
+        # so that the run can be moved through 99_trash and deleted.
+        for directory, _, files in os.walk(str(cls.work.path)):
+            for name in files:
+                os.chmod(os.path.join(directory, name), stat.S_IWRITE | stat.S_IREAD)
         cls.work.close()
 
     def c_product(self, name, shape="dcb", changes=None, extra_cells=None, prefix=None):
@@ -150,6 +156,68 @@ class RegistryTest(unittest.TestCase):
         with mock.patch.dict(os.environ, {"DCB_KERNEL": ""}):
             with self.assertRaisesRegex(registry.RegistryError, "DCB_KERNEL"):
                 cell.external_roots("cortex-m4")
+
+    def test_external_checkout_is_recorded_not_locked(self):
+        root = self.work.folder("external_record")
+        support.c_cell(root, "freertos", "dcb")
+        support.write(root / "10_pkg" / "test" / "config" / "x.h", "/* config */\n")
+        kernel = self.work.folder("external_record_kernel")
+        (kernel / "include").mkdir()
+        section = {"environment": "DCB_KERNEL", "commit": "0" * 40, "include_roots": ["include"],
+                   "core_include_roots": {"cortex-m4": []}, "gate_core": "cortex-m4", "config_roots": ["10_pkg/test/config"]}
+        cells = {"freertos": support.c_entry("freertos", ("arm",), external_headers=section)}
+        cell = registry.load_registry(support.product(root, "dcb", cells))["cells"]["freertos"]
+        with mock.patch.dict(os.environ, {"DCB_KERNEL": str(kernel)}):
+            roots, _ = cell.external_roots("cortex-m4")
+            record = cell.external_checkout()
+        self.assertEqual(roots, [os.path.join(os.path.realpath(str(kernel)), "include")])
+        self.assertEqual((record["pinned_commit"], record["matches_pin"]), ("0" * 40, False))
+
+    def standard_product(self, name, local_root=None):
+        root = self.work.folder(name)
+        support.c_cell(root, "engine", "dcb")
+        settings = support.product(root, "dcb", {"engine": support.c_entry("engine")})
+        foundation = self.work.folder(name + "_foundation")
+        support.write(foundation / "10_pkg" / "include" / "comsect1_provider.h", "/* standard */\n")
+        for command in (["init", "-q"], ["add", "-A"],
+                        ["-c", "user.name=t", "-c", "user.email=t@invalid", "commit", "-q", "-m", "fixture"]):
+            registry._git(str(foundation), command)
+        pin = {"commit": "f" * 40, "root_variable": "DCB_FND_SDK_STANDARD_ROOT",
+               "public_header": "10_pkg/include/comsect1_provider.h"}
+        if local_root is not None:
+            pin["local_root"] = str(foundation) if local_root is True else local_root
+        support.write(root / "10_pkg" / "components" / "fnd_sdk_standard.json", json.dumps(pin) + "\n")
+        return settings, foundation
+
+    def test_foundation_at_another_commit_and_dirty_is_recorded_not_refused(self):
+        settings, foundation = self.standard_product("standard_record")
+        support.write(foundation / "untracked.txt", "change\n")
+        with mock.patch.dict(os.environ, {"DCB_FND_SDK_STANDARD_ROOT": str(foundation)}):
+            include = registry.standard_include_root(settings)
+            record = registry.standard_record(settings)
+        real = os.path.realpath(str(foundation))
+        self.assertEqual(include, os.path.join(real, "10_pkg", "include"))
+        self.assertEqual(record["head"], registry._git(str(foundation), ["rev-parse", "HEAD"]))
+        self.assertEqual((record["root"], record["source"], record["pinned_commit"], record["matches_pin"],
+                          record["dirty"]), (real, "environment", "f" * 40, False, True))
+
+    def test_foundation_falls_back_to_the_pin_local_root(self):
+        settings, foundation = self.standard_product("standard_local", local_root=True)
+        with mock.patch.dict(os.environ, {"DCB_FND_SDK_STANDARD_ROOT": ""}):
+            record = registry.standard_checkout(settings)
+        self.assertEqual((record["source"], record["dirty"]), ("local_root", False))
+        settings, _ = self.standard_product("standard_none")
+        with mock.patch.dict(os.environ, {"DCB_FND_SDK_STANDARD_ROOT": ""}):
+            with self.assertRaisesRegex(registry.RegistryError, "does not name the fnd-sdk-standard checkout"):
+                registry.standard_checkout(settings)
+        settings, foundation = self.standard_product("standard_header")
+        os.remove(str(foundation / "10_pkg" / "include" / "comsect1_provider.h"))
+        with mock.patch.dict(os.environ, {"DCB_FND_SDK_STANDARD_ROOT": str(foundation)}):
+            with self.assertRaisesRegex(registry.RegistryError, "public header is missing"):
+                registry.standard_checkout(settings)
+        settings, _ = self.standard_product("standard_relative", local_root="relative/root")
+        with self.assertRaisesRegex(registry.RegistryError, "absolute path"):
+            registry.standard_checkout(settings)
 
     def test_stems_symbols_and_cycles(self):
         with self.assertRaisesRegex(registry.RegistryError, "2 .c files"):

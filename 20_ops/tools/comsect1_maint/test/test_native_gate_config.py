@@ -44,15 +44,23 @@ class LaneConfigTest(unittest.TestCase):
             with self.subTest(shape=name), self.assertRaises(driver.ToolError) as caught:
                 self.load(dict(BASE, clang_resource=clang), name)
             self.assertEqual(caught.exception.code, driver.EXIT_CONFIG)
-            self.assertIn("pinned manifest", caught.exception.message)
+            self.assertIn("(manifest)", caught.exception.message)
 
     def test_bad_manifest_digest_and_publication_member_are_refused(self):
-        with self.assertRaisesRegex(driver.ToolError, "pin the provenance"):
+        with self.assertRaisesRegex(driver.ToolError, "record the provenance digest"):
             self.load(dict(BASE, clang_resource=dict(MANIFEST, manifest_sha256="A" * 64)), "digest")
         with self.assertRaisesRegex(driver.ToolError, "unaliased"):
             self.load(dict(BASE, publications=[{"canonical_root": "C:/sdk", "inventory_member": "../x",
                                                 "declaration_member": "d.json"}]), "publication")
 
+    def test_tool_hash_difference_is_recorded_not_refused(self):
+        binary = support.write(self.work.path / "tool_binary.exe", "fixture tool\n")
+        config = self.load(BASE, "tool_hash")
+        paths = {key: binary for key in driver.TOOL_KEYS}
+        actual, differs = driver.tool_hashes(config, paths)
+        self.assertEqual(set(actual), set(driver.TOOL_KEYS))
+        self.assertEqual(differs, [key for key in driver.TOOL_KEYS if config["expected_sha256"][key] != actual[key]])
+        self.assertTrue(differs)
 
     def test_analysis_standard_follows_the_frontend(self):
         self.assertEqual(driver.analysis_standard(self.load(BASE, "c23")), "c23")

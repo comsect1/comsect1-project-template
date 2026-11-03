@@ -5,7 +5,7 @@
 Usage:
     python -I -B 20_ops/tools/native_gate.py --cell <cell-root> \
         --config <lane-config.json> [--lane native|plain|both] [--run-id ID] \
-        [--accept-tool-hashes] [--accept-tool-drift]
+        [--accept-tool-drift]
 
 The Cell is read only. All output goes to
 `90_temps/verification/native_gate/<run-id>/` of this repository. The tool
@@ -16,11 +16,20 @@ killed on timeout. Text is decoded as UTF-8 explicitly everywhere. Every path
 the plan reads is checked component by component before canonicalization:
 a linked or reparse component is refused.
 
+Consumed tools are never locked by content. `expected_sha256` holds the Gate
+binary digests last recorded for the configuration; the run reads the actual
+digests, records both and every differing key (`tool_sha256`,
+`tool_sha256_recorded`, `tool_sha256_differs`) and never refuses on a
+difference.
+
 The lane configuration selects the clang resource in one of two shapes:
-`{"manifest", "manifest_sha256"}` admits one pinned toolchain inventory (the
-manifest's every member is hashed, locked for the run and the closure may only
-read admitted resource headers); `{"resource_dir", "required_major",
-"clang_candidates"}` discovers clang and checks its resource directory.
+`{"manifest", "manifest_sha256"}` admits one toolchain inventory (its members
+are the complete directory, locked for the run, and the closure may only read
+inventory resource headers; the manifest digest, each member's size and
+SHA-256 and the semantic runtime digest are read and recorded, with every
+difference from the manifest, in `native_toolchain`, never refused);
+`{"resource_dir", "required_major", "clang_candidates"}` discovers clang and
+checks its resource directory.
 `gate_set.frontend_standards` lists the ISO C editions the installed C
 frontend accepts. The lane analyses a Cell with its build standard when the
 frontend accepts it, otherwise with the newest accepted edition older than it
@@ -42,7 +51,6 @@ summary). With `--lane both` the highest code of the lanes is returned.
      3  INDETERMINATE        a lane has Gate verdict INDETERMINATE (blocked)
      4  CONFIG               lane configuration unreadable or invalid, or maintainer tools drift
      5  TOOL_SET_UNAVAILABLE installed Gate set or a binary is absent
-     6  TOOL_HASH_MISMATCH   binary hash differs from the configuration
      7  CLANG_UNAVAILABLE    clang or its resource directory not usable
      8  CELL_INVALID         Cell root missing, not a Cell, link, or no C unit
      9  OUTPUT_INVALID       run id or output directory refused
@@ -77,7 +85,6 @@ EXIT_USAGE = 2
 EXIT_INDETERMINATE = 3
 EXIT_CONFIG = 4
 EXIT_TOOL_SET_UNAVAILABLE = 5
-EXIT_TOOL_HASH_MISMATCH = 6
 EXIT_CLANG_UNAVAILABLE = 7
 EXIT_CELL_INVALID = 8
 EXIT_OUTPUT_INVALID = 9
@@ -89,7 +96,7 @@ EXIT_INTERNAL = 14
 
 EXIT_NAMES = {
     0: "PASS", 1: "FAIL", 2: "USAGE", 3: "INDETERMINATE", 4: "CONFIG",
-    5: "TOOL_SET_UNAVAILABLE", 6: "TOOL_HASH_MISMATCH", 7: "CLANG_UNAVAILABLE",
+    5: "TOOL_SET_UNAVAILABLE", 7: "CLANG_UNAVAILABLE",
     8: "CELL_INVALID", 9: "OUTPUT_INVALID", 10: "PLAN_FAILED",
     11: "NATIVE_INPUT_FAILED", 12: "GATE_REFUSED", 13: "TIMEOUT", 14: "INTERNAL",
 }
@@ -238,7 +245,7 @@ def load_config(path):
                 "clang_resource.manifest must explicitly select provenance")
         require(isinstance(clang["manifest_sha256"], str)
                 and SHA256_PATTERN.fullmatch(clang["manifest_sha256"]) is not None,
-                "clang_resource.manifest_sha256 must pin the provenance bytes")
+                "clang_resource.manifest_sha256 must record the provenance digest")
         config["_clang_mode"] = "manifest"
     elif set(clang) == set(DISCOVERY_KEYS):
         require(clang["resource_dir"] is None or (isinstance(clang["resource_dir"], str) and clang["resource_dir"]),
@@ -251,7 +258,7 @@ def load_config(path):
         require(clang["resource_dir"] is not None or cands, "clang_resource needs resource_dir or clang_candidates")
         config["_clang_mode"] = "discovery"
     else:
-        raise ToolError(EXIT_CONFIG, "clang_resource must have exactly the members %s (pinned manifest) or %s "
+        raise ToolError(EXIT_CONFIG, "clang_resource must have exactly the members %s (manifest) or %s "
                         "(discovery)" % (", ".join(MANIFEST_KEYS), ", ".join(sorted(DISCOVERY_KEYS))))
     timeouts = config["timeouts_seconds"]
     check_keys(timeouts, "timeouts_seconds", ("clang", "native_input", "gate"))
@@ -300,26 +307,20 @@ def resolve_gate_set(config):
     return bin_dir, paths, set_id
 
 
-def check_tool_hashes(config, paths, accept):
+def tool_hashes(config, paths):
+    """(actual digests, keys whose digest differs from the recorded expected_sha256). Metadata only:
+    a difference is printed and recorded, never refused (consumers do not re-verify tools)."""
     actual = {key: sha256_file(paths[key]) for key in TOOL_KEYS}
-    mismatched = [key for key in TOOL_KEYS if actual[key] != config["expected_sha256"][key]]
-    if accept:
-        for key in TOOL_KEYS:
-            print("tool_hash %s actual=%s expected=%s%s" % (
-                key, actual[key], config["expected_sha256"][key], " ACCEPTED" if key in mismatched else ""))
-    elif mismatched:
-        for key in mismatched:
-            print("tool_hash %s actual=%s expected=%s MISMATCH" % (key, actual[key], config["expected_sha256"][key]),
-                  file=sys.stderr)
-        raise ToolError(EXIT_TOOL_HASH_MISMATCH,
-                        "tool hash mismatch for %s (use --accept-tool-hashes to run anyway; the config is not edited)"
-                        % ", ".join(mismatched))
-    return actual, mismatched
+    differs = [key for key in TOOL_KEYS if actual[key] != config["expected_sha256"][key]]
+    for key in differs:
+        print("tool_hash %s actual=%s recorded=%s differs (recorded, not a condition)"
+              % (key, actual[key], config["expected_sha256"][key]))
+    return actual, differs
 
 
 def find_clang(config, runtime_sha256=None, locks=None):
     """Return (clang executable or None, resource include directory Path) for the configured shape:
-    the pinned manifest admission (`locks` holds the inputs for the run) or the discovery."""
+    the manifest admission (`locks` holds the inputs for the run) or the discovery."""
     if set(config["clang_resource"]) == set(MANIFEST_KEYS):
         return admit_toolchain(config, runtime_sha256, locks)
     return discover_clang(config)
@@ -426,14 +427,15 @@ def toolchain_inventory(root, manifest_path):
 
 
 def admit_toolchain(config, runtime_sha256, locks):
-    """Admit one explicitly pinned compiler/resource set for the actual runtime."""
+    """Admit one explicitly selected compiler/resource set: its inventory is the complete directory
+    and is locked for the run. Digests (manifest, members, semantic runtime) are read and recorded with
+    every difference from the manifest; a difference is never refused."""
     selection = config["clang_resource"]
     manifest_path = Path(expand(selection["manifest"], "clang_resource.manifest"))
     require(manifest_path.is_absolute(), "clang_resource.manifest must be absolute")
     try:
         raw = manifest_path.read_bytes()
-        require(hashlib.sha256(raw).hexdigest() == selection["manifest_sha256"],
-                "native toolchain provenance digest differs from configured identity")
+        manifest_sha256 = hashlib.sha256(raw).hexdigest()
         record = json.loads(raw)
         check_keys(record, "native toolchain", ("kind", "source", "compiler", "semantic_runtime",
                                                 "resource_directory", "files"))
@@ -467,8 +469,6 @@ def admit_toolchain(config, runtime_sha256, locks):
         resource = toolchain_member(root, record["resource_directory"]) / "include"
         require(record["compiler"] in members and record["semantic_runtime"] in members,
                 "compiler/runtime absent from toolchain inventory")
-        require(members[record["semantic_runtime"]][1]["sha256"] == runtime_sha256,
-                "toolchain semantic runtime differs from installed libclang")
         require(runtime == members[record["semantic_runtime"]][0], "toolchain semantic runtime path differs")
         directories = {root, *root.parents}
         for path, _ in members.values():
@@ -477,22 +477,32 @@ def admit_toolchain(config, runtime_sha256, locks):
             locks.enter_context(lock_toolchain_input(directory, True))
         locks.enter_context(lock_toolchain_input(manifest_path))
         require(manifest_path.read_bytes() == raw, "toolchain provenance changed during admission")
-        for path, member in members.values():
+        actual = {}
+        for name, (path, member) in members.items():
             locks.enter_context(lock_toolchain_input(path))
-            require(path.is_file() and path.stat().st_size == member["size"]
-                    and sha256_file(path) == member["sha256"], "toolchain member changed: %s" % path)
+            require(path.is_file(), "toolchain member is absent: %s" % path)
+            actual[name] = sha256_file(path)
+        differs = sorted(name for name, (path, member) in members.items()
+                         if path.stat().st_size != member["size"] or actual[name] != member["sha256"])
         require(toolchain_inventory(root, manifest_path) == set(members),
                 "toolchain directory differs from its complete inventory")
         require((resource / "stddef.h").is_file() and (resource / "stdint.h").is_file(),
                 "toolchain resource headers are absent")
-        config["_resource_members"] = {str(path.resolve()).casefold(): member["sha256"]
-                                       for path, member in members.values()}
+        config["_resource_members"] = {str(path.resolve()).casefold(): actual[name]
+                                       for name, (path, member) in members.items()}
         config["_native_toolchain"] = {
-            "manifest": str(manifest_path), "manifest_sha256": selection["manifest_sha256"],
+            "manifest": str(manifest_path), "manifest_sha256": manifest_sha256,
+            "manifest_sha256_recorded": selection["manifest_sha256"],
             "source": record["source"], "compiler": str(compiler),
-            "compiler_sha256": members[record["compiler"]][1]["sha256"],
-            "semantic_runtime_sha256": runtime_sha256, "resource_include": str(resource),
-            "member_count": len(members)}
+            "compiler_sha256": actual[record["compiler"]],
+            "semantic_runtime_sha256": runtime_sha256,
+            "semantic_runtime_sha256_listed": members[record["semantic_runtime"]][1]["sha256"],
+            "resource_include": str(resource), "member_count": len(members), "members_differ": differs}
+        for name in differs:
+            print("toolchain member %s differs from its manifest entry (recorded, not a condition)" % name)
+        if manifest_sha256 != selection["manifest_sha256"]:
+            print("toolchain manifest digest %s differs from the recorded %s (recorded, not a condition)"
+                  % (manifest_sha256, selection["manifest_sha256"]))
         config["_native_toolchain_manifest"] = record
         config["_toolchain_inventory_check"] = lambda: require(
             toolchain_inventory(root, manifest_path) == set(members), "toolchain inventory changed during execution")
@@ -878,8 +888,6 @@ def parse_arguments(argv):
     parser.add_argument("--config", required=True, help="lane configuration JSON")
     parser.add_argument("--lane", choices=("native", "plain", "both"), default="native")
     parser.add_argument("--run-id", default=None, help="run id (default: UTC timestamp)")
-    parser.add_argument("--accept-tool-hashes", action="store_true",
-                        help="print actual tool hashes and continue on mismatch; the config is not edited")
     parser.add_argument("--accept-tool-drift", action="store_true",
                         help="run although the maintainer tools differ from their template manifest (recorded)")
     return parser.parse_args(argv)
@@ -899,7 +907,7 @@ def run(arguments):
     run_id = arguments.run_id or datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     run_dir = prepare_output(run_id, cell)
     _, paths, set_id = resolve_gate_set(config)
-    hashes, accepted = check_tool_hashes(config, paths, arguments.accept_tool_hashes)
+    hashes, differs = tool_hashes(config, paths)
     manifest_mode = config["_clang_mode"] == "manifest"
     with ExitStack() as locks:
         clang, resource_include = (None, None)
@@ -928,7 +936,8 @@ def run(arguments):
             config["_toolchain_inventory_check"]()
         summary = {
             "run_id": run_id, "lane": arguments.lane, "exit": code, "exit_class": EXIT_NAMES[code],
-            "release_set_id": set_id, "tool_sha256": hashes, "tool_hash_mismatch_accepted": accepted,
+            "release_set_id": set_id, "tool_sha256": hashes,
+            "tool_sha256_recorded": dict(config["expected_sha256"]), "tool_sha256_differs": differs,
             "config_sha256": config["_sha256"], "cell_manifest_sha256": sha256_file(cell / "comsect1.json"),
             "standard": config["build"]["standard"], "analysis_standard": analysis_standard(config),
             "target": config["build"]["target"],

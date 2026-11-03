@@ -21,7 +21,15 @@ names the ABI mirror, the tests, the test image, the static registration
 depends only on library Cells and declares the cross-build `budget` of its cores
 (always, or only when cross-built: `registry.provider_budget_required`). A Cell
 whose `comsect1.json` names `fnd-sdk-standard` among its hosted vocabularies
-reads `comsect1_provider.h` of the pinned checkout (`standard_include_root`).
+reads `comsect1_provider.h` of the Foundation checkout (`standard_include_root`).
+
+A consumed checkout (the Foundation of `host_build.standard_pin`, an adopted
+`external_headers` tree) is never locked: its pinned commit is recorded
+metadata. The tools resolve the checkout, read its HEAD and dirty state, record
+them beside the pinned commit (`standard_checkout`, `Cell.external_checkout`)
+and never refuse on a mismatch or a dirty tree. The object cache keys every
+compile by the bytes of the headers actually read, so correctness never rests
+on the pin.
 
 Every Cell name and path segment is one lowercase word. Across the Cells no two
 C file stems may be equal (a stem lives in one folder of one Cell; the only
@@ -64,8 +72,9 @@ PROVIDER_CATEGORY = "provider"
 # budget: the cross-build size budget of every cross core, in bytes of the Cell's own objects.
 BUDGET_KEYS = {"text", "data", "bss"}
 # external_headers of a Cell that adopts an external header tree (a firmware kernel), read only and
-# outside this repository: the variable naming the checkout, its pinned commit, the include roots of
-# every core and of the Gate's core, and repository folders of build inputs (a kernel configuration).
+# outside this repository: the variable naming the checkout, the commit it was pinned at (recorded
+# metadata, never a lock), the include roots of every core and of the Gate's core, and repository
+# folders of build inputs (a kernel configuration).
 EXTERNAL_HEADER_KEYS = {"environment", "commit", "include_roots", "core_include_roots", "gate_core",
                         "config_roots"}
 COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}")
@@ -318,27 +327,13 @@ class Cell:
     def external_roots(self, core):
         """(absolute include roots of the external checkout for the core, absolute config roots).
 
-        The checkout is read only from the named environment variable and must sit at the pinned
-        commit with no change; otherwise this fails closed before any compile."""
+        The checkout is read only from the named environment variable and lies outside this
+        repository. Its commit and dirty state are recorded (external_checkout), never required."""
         section = self.external_headers
         if section is None:
             return [], []
         repo_root = self.settings.repo_root
-        variable = section["environment"]
-        checkout = os.environ.get(variable)
-        _require(checkout and os.path.isdir(checkout),
-                 "Cell %s: %s must name the checkout of its external headers" % (self.name, variable))
-        checkout = os.path.realpath(checkout)
-        repo = os.path.realpath(repo_root)
-        inside = os.path.splitdrive(checkout)[0].lower() == os.path.splitdrive(repo)[0].lower() \
-            and os.path.commonpath([checkout, repo]) == repo
-        _require(not inside,
-                 "Cell %s: the checkout %s must lie outside this repository" % (self.name, checkout))
-        head = _git(checkout, ["rev-parse", "HEAD"])
-        _require(head == section["commit"], "Cell %s: checkout %s is at %s, not the pinned commit %s"
-                 % (self.name, checkout, head, section["commit"]))
-        _require(_git(checkout, ["status", "--porcelain"]) == "",
-                 "Cell %s: checkout %s has uncommitted changes" % (self.name, checkout))
+        checkout = self._external_checkout_root()
         roots = []
         for relative in section["include_roots"] + section["core_include_roots"][core]:
             path = os.path.join(checkout, *relative.split("/"))
@@ -347,13 +342,36 @@ class Cell:
         configs = [os.path.join(repo_root, *r.split("/")) for r in section["config_roots"]]
         return roots, configs
 
+    def _external_checkout_root(self):
+        variable = self.external_headers["environment"]
+        checkout = os.environ.get(variable)
+        _require(checkout and os.path.isdir(checkout),
+                 "Cell %s: %s must name the checkout of its external headers" % (self.name, variable))
+        checkout = os.path.realpath(checkout)
+        _require(not _inside(checkout, self.settings.repo_root),
+                 "Cell %s: the checkout %s must lie outside this repository" % (self.name, checkout))
+        return checkout
+
+    def external_checkout(self):
+        """The recorded identity of the external header checkout (None without external_headers):
+        its root and variable, the pinned commit of the registry, the observed HEAD and dirty state,
+        and whether HEAD equals the pin. Metadata only; a mismatch or a dirty tree is never refused."""
+        if self.external_headers is None:
+            return None
+        checkout = self._external_checkout_root()
+        observed = observed_checkout(checkout)
+        return dict(observed, root=checkout, environment=self.external_headers["environment"],
+                    pinned_commit=self.external_headers["commit"],
+                    matches_pin=observed["head"] == self.external_headers["commit"])
+
     def cross_cores(self):
         return list(self.targets.get("arm", {}).get("cross_cores", []))
 
     def standard_roots(self):
-        """The hosted vocabulary roots: [the pinned fnd-sdk-standard include directory] for a Cell whose
-        comsect1.json declares the standard, then, for a Cell with SDK dependencies, the selected SDK's
-        include directory and its shell membrane. Fails closed on the pin or the SDK selection."""
+        """The hosted vocabulary roots: [the Foundation's fnd-sdk-standard include directory] for a Cell
+        whose comsect1.json declares the standard, then, for a Cell with SDK dependencies, the selected
+        SDK's include directory and its shell membrane. Fails closed on an unresolvable checkout or SDK
+        selection, never on the pinned commit."""
         roots = [standard_include_root(self.settings)] if self.adopts_standard else []
         if self.sdk_dependencies:
             sdk_policy = self.settings.registry["sdk_dependencies"]
@@ -569,17 +587,41 @@ def _git(checkout, arguments):
     return done.stdout.strip()
 
 
-# Pin checks that passed in this process: (pin path, pin bytes, checkout) -> include directory. One tool
-# process checks a pin once, not once per compiled unit.
-_CHECKED_STANDARD_ROOTS = {}
+def _inside(path, repo_root):
+    path, repo = os.path.realpath(path), os.path.realpath(repo_root)
+    return os.path.splitdrive(path)[0].lower() == os.path.splitdrive(repo)[0].lower() \
+        and os.path.commonpath([path, repo]) == repo
 
 
-def standard_include_root(settings=None):
-    """The include directory of the pinned fnd-sdk-standard checkout, after the pin check: the checkout
-    named by the pin's root_variable lies outside this repository, is at the pinned commit, is clean and
-    holds the public header (fail closed). A check that passed is reused for the same pin and checkout
-    for the rest of the process."""
-    settings = _settings(settings)
+def _git_observation(checkout, arguments):
+    """The stripped output of one git query, or None when the checkout cannot answer it."""
+    try:
+        return _git(checkout, arguments)
+    except RegistryError:
+        return None
+
+
+# Observed consumed checkouts of this process: real path -> {"head", "dirty"}. One tool process reads
+# a checkout once, not once per compiled unit.
+_OBSERVED_CHECKOUTS = {}
+
+
+def observed_checkout(checkout):
+    """{"head", "dirty"} of a consumed checkout: HEAD (None when it is no git checkout) and whether it
+    holds a change or an untracked file (None when unknown). Read for the record, never a condition."""
+    if checkout not in _OBSERVED_CHECKOUTS:
+        head = _git_observation(checkout, ["rev-parse", "HEAD"])
+        status = _git_observation(checkout, ["status", "--porcelain=v1", "--untracked-files=all"]) \
+            if head is not None else None
+        _OBSERVED_CHECKOUTS[checkout] = {"head": head, "dirty": None if status is None else status != ""}
+    return dict(_OBSERVED_CHECKOUTS[checkout])
+
+
+# Resolved Foundation checkouts of this process: (pin path, pin bytes, override) -> standard_checkout.
+_STANDARD_CHECKOUTS = {}
+
+
+def _standard_pin(settings):
     _require(settings.host_build is not None, "the configuration names no fnd-sdk-standard pin")
     pin_path = settings.path_of(settings.host_build["standard_pin"])
     try:
@@ -589,27 +631,64 @@ def standard_include_root(settings=None):
     except (OSError, ValueError) as error:
         raise RegistryError("the fnd-sdk-standard pin is unreadable: %s" % error)
     _require(isinstance(pin, dict), "the fnd-sdk-standard pin is not an object")
-    root = os.environ.get(pin.get("root_variable", ""), "")
-    memo = (os.path.normcase(os.path.abspath(pin_path)), pin_bytes, root)
-    if memo in _CHECKED_STANDARD_ROOTS:
-        return _CHECKED_STANDARD_ROOTS[memo]
-    _CHECKED_STANDARD_ROOTS[memo] = found = _check_standard_root(settings, pin, root)
-    return found
+    _require(isinstance(pin.get("root_variable"), str) and pin["root_variable"],
+             "the fnd-sdk-standard pin names no root_variable")
+    _require(isinstance(pin.get("public_header"), str) and pin["public_header"],
+             "the fnd-sdk-standard pin names no public_header")
+    _require(pin.get("local_root") is None or (isinstance(pin["local_root"], str) and os.path.isabs(pin["local_root"])),
+             "the fnd-sdk-standard pin local_root must be an absolute path")
+    return pin_path, pin_bytes, pin
 
 
-def _check_standard_root(settings, pin, root):
-    _require(root and os.path.isdir(root), "%s does not name the fnd-sdk-standard checkout" % pin.get("root_variable"))
-    checkout, repo = os.path.realpath(root), os.path.realpath(settings.repo_root)
-    inside = os.path.splitdrive(checkout)[0].lower() == os.path.splitdrive(repo)[0].lower() \
-        and os.path.commonpath([checkout, repo]) == repo
-    _require(not inside, "the fnd-sdk-standard checkout %s must lie outside this repository" % checkout)
-    head = _git(root, ["rev-parse", "HEAD"])
-    _require(head == pin.get("commit"), "the fnd-sdk-standard checkout is at %s, the pin is %s" % (head, pin.get("commit")))
-    _require(_git(root, ["status", "--porcelain=v1", "--untracked-files=all"]) == "",
-             "the fnd-sdk-standard checkout is not clean")
-    header = os.path.join(root, *pin["public_header"].split("/"))
-    _require(os.path.isfile(header), "the pinned public header is missing: %s" % header)
-    return os.path.dirname(header)
+def standard_checkout(settings=None):
+    """The Foundation checkout that supplies the fnd-sdk-standard, with its recorded identity.
+
+    The root is the directory named by the pin's root_variable, or, when that variable is unset or
+    empty, the pin's local_root. It must exist, lie outside this repository and hold the public header
+    (fail closed: nothing can be compiled otherwise). The pin's commit is recorded metadata: the result
+    holds the root, its source (environment or local_root), the pinned commit, the observed HEAD and
+    dirty state and whether HEAD equals the pin; a mismatch or a dirty tree is never refused. The
+    result is reused for the same pin and override for the rest of the process."""
+    settings = _settings(settings)
+    pin_path, pin_bytes, pin = _standard_pin(settings)
+    override = os.environ.get(pin["root_variable"], "")
+    memo = (os.path.normcase(os.path.abspath(pin_path)), pin_bytes, override)
+    if memo not in _STANDARD_CHECKOUTS:
+        _STANDARD_CHECKOUTS[memo] = _resolve_standard_checkout(settings, pin, override)
+    return dict(_STANDARD_CHECKOUTS[memo])
+
+
+def _resolve_standard_checkout(settings, pin, override):
+    source, root = ("environment", override) if override else ("local_root", pin.get("local_root") or "")
+    _require(root and os.path.isdir(root), "%s does not name the fnd-sdk-standard checkout%s"
+             % (pin["root_variable"], "" if source == "environment" else " and the pin has no usable local_root"))
+    checkout = os.path.realpath(root)
+    _require(not _inside(checkout, settings.repo_root),
+             "the fnd-sdk-standard checkout %s must lie outside this repository" % checkout)
+    header = os.path.join(checkout, *pin["public_header"].split("/"))
+    _require(os.path.isfile(header), "the fnd-sdk-standard public header is missing: %s" % header)
+    observed = observed_checkout(checkout)
+    pinned = pin.get("commit") if isinstance(pin.get("commit"), str) else None
+    return {"root": checkout, "source": source, "root_variable": pin["root_variable"],
+            "include_root": os.path.dirname(header), "pinned_commit": pinned,
+            "head": observed["head"], "dirty": observed["dirty"],
+            "matches_pin": observed["head"] is not None and observed["head"] == pinned}
+
+
+def standard_include_root(settings=None):
+    """The include directory of the Foundation's fnd-sdk-standard public header (standard_checkout)."""
+    return standard_checkout(settings)["include_root"]
+
+
+def standard_record(settings=None):
+    """The recorded identity of the Foundation checkout (standard_checkout without the include
+    directory), or None when no unit of this process read the Foundation."""
+    settings = _settings(settings)
+    if settings.host_build is None or not _STANDARD_CHECKOUTS:
+        return None
+    record = standard_checkout(settings)
+    del record["include_root"]
+    return record
 
 
 GUARD_PATTERN = re.compile(r"^[ \t]*#[ \t]*ifndef[ \t]+(\w+)[ \t]*\n[ \t]*#[ \t]*define[ \t]+\1\b", re.MULTILINE)

@@ -13,8 +13,7 @@ derived configuration lives in a task-owned scratch run that is moved through
 `99_trash` afterwards (exact run, inventory and identity checked).
 
     python -I -B 20_ops/tools/gate.py --cell <name> --target <target> [--run-id ID]
-                                      [--lane native|plain|both] [--accept-tool-hashes]
-                                      [--accept-tool-drift]
+                                      [--lane native|plain|both] [--accept-tool-drift]
 
 Output: `90_temps/verification/native_gate/<run-id>/` (see native_gate.py). The
 exit code is the one of native_gate.py (0 PASS); 2 for a usage or registry error.
@@ -49,7 +48,7 @@ def derived_config(cell, target):
     # An adopted external header tree (external_headers, a firmware kernel) is read through system
     # include roots, like the Windows SDK, for the Gate's core; its configuration folder in this
     # repository is an external include root. A Cell that adopts the fnd-sdk-standard reads
-    # comsect1_provider.h of the pinned checkout, an external input like the Windows SDK headers.
+    # comsect1_provider.h of the Foundation checkout, an external input like the Windows SDK headers.
     external, configs = [], []
     if cell.external_headers is not None:
         external, configs = cell.external_roots(cell.external_headers["gate_core"])
@@ -85,7 +84,6 @@ def main(argv):
     parser.add_argument("--target", required=True, choices=registry.TARGET_NAMES)
     parser.add_argument("--run-id", default=None)
     parser.add_argument("--lane", choices=("native", "plain", "both"), default="native")
-    parser.add_argument("--accept-tool-hashes", action="store_true")
     parser.add_argument("--accept-tool-drift", action="store_true")
     args = parser.parse_args(argv)
     try:
@@ -111,8 +109,6 @@ def main(argv):
         handle.write("\n")
     command = [sys.executable, "-I", "-B", NATIVE_GATE, "--cell", cell.root, "--config", config_path,
                "--lane", args.lane, "--run-id", run_id]
-    if args.accept_tool_hashes:
-        command.append("--accept-tool-hashes")
     if args.accept_tool_drift:
         command.append("--accept-tool-drift")
     print("gate: cell=%s target=%s triple=%s plain_char=%s" % (

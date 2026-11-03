@@ -378,7 +378,7 @@ def _unit_includes(unit_cell):
 
 
 def standard_include_root():
-    """The include directory of the pinned fnd-sdk-standard checkout (registry.standard_include_root,
+    """The include directory of the Foundation's fnd-sdk-standard header (registry.standard_include_root,
     failing as a BuildError): a fixture is compiled against nothing else of the standard."""
     try:
         return registry.standard_include_root(_settings())
@@ -593,8 +593,8 @@ def _build_fixture(tested, cell, run_dir, object_dir, env, cache=None, identity=
     passive vocabulary (the public header a Provider is built against), and it exports every
     external symbol it defines (MinGW automatic export), so the tests reach its static
     registrations as data. It is compiled with the Cell's standard and the warnings, linked with
-    -shared, and never linked into the product library. It includes the pinned fnd-sdk-standard
-    header as a Provider author does (standard_include_root checks the pin first); a fixture that
+    -shared, and never linked into the product library. It includes the Foundation's fnd-sdk-standard
+    header as a Provider author does (standard_include_root resolves the checkout); a fixture that
     links statically bound Providers gets its image build record beside it. An explicit
     fixture_units selection also compiles actual owner units with the owner's private headers."""
     includes = ["-I", standard_include_root()]
@@ -941,6 +941,11 @@ def build_library(cell_name, run_id, sanitize=None, accept_tool_drift=False, obj
     }
     if image_record is not None:
         record["image_record"] = image_record
+    # The Foundation checkout read by this build: root, pinned commit, observed HEAD and dirty state
+    # (metadata for debugging, never a condition of the build).
+    standard = registry.standard_record(_settings())
+    if standard is not None:
+        record["fnd_sdk_standard"] = standard
     if sanitize is not None:
         record["sanitize"] = {"variant": sanitize, "fixtures_sanitized": False}
         if msvc_paths is not None:

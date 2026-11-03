@@ -56,17 +56,24 @@ class NativeToolchainTests(unittest.TestCase):
         self.assertEqual(compiler, self.root / "bin/clang.exe")
         self.assertEqual(resource, self.root / "lib/clang/19/include")
         self.assertEqual(self.config["_native_toolchain"]["member_count"], 4)
+        self.assertEqual(self.config["_native_toolchain"]["members_differ"], [])
 
-    def test_changed_manifest_is_refused(self):
+    def test_changed_manifest_digest_is_recorded_not_refused(self):
         with (self.root / "provenance.json").open("ab") as stream: stream.write(b" ")
-        with self.assertRaisesRegex(tool.ToolError, "provenance digest"): self.admit()
+        self.admit()
+        record = self.config["_native_toolchain"]
+        self.assertNotEqual(record["manifest_sha256"], record["manifest_sha256_recorded"])
 
-    def test_wrong_semantic_runtime_is_refused(self):
-        with self.assertRaisesRegex(tool.ToolError, "semantic runtime differs"): self.admit("0" * 64)
+    def test_other_semantic_runtime_is_recorded_not_refused(self):
+        self.admit("0" * 64)
+        record = self.config["_native_toolchain"]
+        self.assertEqual(record["semantic_runtime_sha256"], "0" * 64)
+        self.assertEqual(record["semantic_runtime_sha256_listed"], self.runtime)
 
-    def test_changed_resource_same_size_is_refused(self):
+    def test_changed_resource_same_size_is_recorded_not_refused(self):
         (self.root / "lib/clang/19/include/stdint.h").write_bytes(b"fixture sint")
-        with self.assertRaisesRegex(tool.ToolError, "member changed"): self.admit()
+        self.admit()
+        self.assertEqual(self.config["_native_toolchain"]["members_differ"], ["lib/clang/19/include/stdint.h"])
 
     def test_unlisted_header_is_refused(self):
         (self.root / "lib/clang/19/include/extra.h").write_bytes(b"unapproved")

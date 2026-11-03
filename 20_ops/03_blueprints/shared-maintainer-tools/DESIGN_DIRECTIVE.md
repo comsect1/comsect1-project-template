@@ -130,7 +130,7 @@ package module instead (section 8); every other consumer is unchanged.
 behaviours are kept and selected by `native_gate_config.json`:
 
 - `clang_resource` has two shapes. `{"manifest", "manifest_sha256"}` is the
-  pinned admission (WSB/Sunset). `{"resource_dir", "required_major",
+  manifest admission (WSB/Sunset; digests recorded, never refused, section 16). `{"resource_dir", "required_major",
   "clang_candidates"}` is discovery (DCB, `check_resource` kept). Exactly one
   shape is accepted; `load_config` reports which.
 - `read_report` is the DCB strict reader (validates `outcome_summary`,
@@ -383,8 +383,8 @@ is for *maintainers* and is never shipped: it is not a recipe input, never
 appears in an SDK or RUNTIME deliverable, and contains no install or bundle
 logic. Keep the two apart by rule, not by inspection: each product's
 `package.py` already scans shipped files; it must additionally refuse any
-path under `20_ops/`. The Foundation tool is pinned per product through
-`component-pins.md`; `comsect1_maint` is versioned by template baseline
+path under `20_ops/`. The Foundation tool is recorded per product through
+`component-pins.md` (metadata, not a lock, section 16); `comsect1_maint` is versioned by template baseline
 (section 7). The two have no import relation in either direction.
 
 ## 10. Out of scope, recorded
@@ -811,3 +811,33 @@ it was; the only link change is the fixture reproducibility (15.2).
   `providers/cross_build.py --cell <c>` for all 8 Cells, `virtual_board` (25),
   `comsect1_maint/test` and `recipes.py check` pass.
 - `sync.py --check` and `text_format.py` pass in all six repositories.
+
+## 16. Consumed dependencies are recorded, not locked (r4, 2026-11-03)
+
+Owner decision 2026-11-03: a consumer never re-verifies the executables or
+libraries it consumes and never locks their version; a floor and interface
+negotiation stay; content digests are metadata. The common policy is
+`.instructions/consumed-dependencies.md`. Every product pinned the Foundation
+(`fnd_sdk_standard.json`) at one commit and the build refused unless the
+checkout was clean at exactly that commit; with the shared checkout at a newer
+HEAD no product could build.
+
+- `registry.standard_checkout` replaces the pin check: the root is the pin's
+  `root_variable` or its optional absolute `local_root`; it must exist, lie
+  outside the repository and hold the public header. HEAD and dirty state are
+  read once per process and recorded with the pinned commit and `matches_pin`;
+  a mismatch or a dirty tree is never refused. The Foundation has no version
+  notion (no release or tag), so no floor is defined.
+- `host_build` writes `fnd_sdk_standard` into `build_record.json`;
+  `cross_build` into `summary.json`, and `external_headers.checkout` per
+  result. `Cell.external_roots` no longer requires the pinned commit or a
+  clean tree.
+- `native_gate`: the Gate binary digests are recorded beside
+  `expected_sha256` (`tool_sha256`, `tool_sha256_recorded`,
+  `tool_sha256_differs`); exit code 6 and `--accept-tool-hashes` are removed
+  (also from `gate.py`). The toolchain manifest digest, member sizes and
+  digests and the semantic runtime digest are recorded with every difference
+  (`native_toolchain.members_differ`); the inventory as the complete directory,
+  the run locks and the closure's resource membership stay.
+- The object cache needed no change: its key is the bytes of the `-MD` closure
+  read from the resolved root.

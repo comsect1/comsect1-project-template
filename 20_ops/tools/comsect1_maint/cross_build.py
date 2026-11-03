@@ -21,8 +21,9 @@ summed over the objects) and every undefined symbol of every object
 (`arm-none-eabi-nm -u`). The `external` list is the undefined set minus the
 symbols the Cell's own objects define. `summary.json` holds the record and a
 short table is printed. A Cell with a `budget` fails a core whose total exceeds
-it; a Cell that adopts the fnd-sdk-standard reads the pinned
-`comsect1_provider.h` as a system header. Per core, the external-linkage
+it; a Cell that adopts the fnd-sdk-standard reads `comsect1_provider.h` of the
+Foundation checkout as a system header (its observed HEAD and dirty state are
+recorded as `fnd_sdk_standard`, never required). Per core, the external-linkage
 symbols every compiled unit defines (the Cells and their dependencies, each unit
 once) must be unique (registry.require_unique_symbols) for the image without a
 platform Cell and for each platform's image. Any failure exits non-zero with a
@@ -210,12 +211,12 @@ def build(run_id, make_archive, cell_name=None, accept_tool_drift=False, object_
                 for membrane in unit_cell.dependency_membranes():
                     includes.append("-I" + membrane)
                 # An adopted external header tree (external_headers, a firmware kernel): its
-                # configuration folder first, then the pinned checkout's roots for this core, as
+                # configuration folder first, then the checkout's roots for this core, as
                 # system headers (read only, outside the repository, not held to the warning bar).
                 external, configs = unit_cell.external_roots(core)
                 includes += ["-I" + path for path in configs] + ["-isystem" + path for path in external]
-                # Declared passive vocabulary and the hosted vocabulary (comsect1_provider.h of the pinned
-                # standard checkout, the selected SDK's membranes) as system headers.
+                # Declared passive vocabulary and the hosted vocabulary (comsect1_provider.h of the
+                # Foundation checkout, the selected SDK's membranes) as system headers.
                 includes += ["-isystem" + path for path in (unit_cell.passive_include_roots() + unit_cell.standard_roots())]
                 for source in unit_cell.sources:
                     key = source if own else "%s:%s" % (unit_cell.name, source)
@@ -276,7 +277,8 @@ def build(run_id, make_archive, cell_name=None, accept_tool_drift=False, object_
         if cell.external_headers is not None:
             external, configs = cell.external_roots(core)
             record["results"][-1]["external_headers"] = {
-                "commit": cell.external_headers["commit"], "include_roots": external,
+                "commit": cell.external_headers["commit"], "checkout": cell.external_checkout(),
+                "include_roots": external,
                 "config_roots": [os.path.relpath(p, REPO_ROOT).replace("\\", "/") for p in configs]}
 
     # One firmware image holds every Cell that is not a platform binding and at most one platform
@@ -292,6 +294,10 @@ def build(run_id, make_archive, cell_name=None, accept_tool_drift=False, object_
             entry["platforms"][platform] = {"units": len(image), "symbols": registry.require_unique_symbols(image)}
         record["unique_external_symbols"][core] = entry
     record["maintainer_tools"] = tools
+    # The Foundation checkout read by this run (metadata, never a condition).
+    standard = registry.standard_record()
+    if standard is not None:
+        record["fnd_sdk_standard"] = standard
     statistics = cache.statistics(REPO_ROOT)
     record["object_cache"] = {key: (statistics[key] - cache_before[key] if isinstance(statistics[key], int)
                                     else statistics[key]) for key in statistics}
