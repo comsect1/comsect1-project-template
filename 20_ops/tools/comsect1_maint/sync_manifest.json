@@ -16,7 +16,7 @@
     "comsect1_maint/test/fixtures/config/hsb.json": "e52ca6b94e7858c4d3e6a8ebf950bdacbfc4166cbbdbf0b5dfcdc07438bddc44",
     "comsect1_maint/test/fixtures/config/sunset.json": "1ae0672cf00fb48dfddef8d2026f36746977ed0ec172abe88b30e134b933d962",
     "comsect1_maint/test/fixtures/config/wsb.json": "bba7f2371928f5c936a091a2e90ac0b4969d5b999305b007dd2b68ee0930e04c",
-    "comsect1_maint/test/fixtures/native_gate_config.json": "645b0bb0d37bb00319ae2694c62fe249288e2e83e49dd32fb7b019538ad82589",
+    "comsect1_maint/test/fixtures/native_gate_config.json": "d7eaa7d250805a93d4b76ccbfd06c51c455bbb7b8ecf8de793f7e4df527e8d4e",
     "comsect1_maint/test/fixtures/process/sleep_child.py": "671c86b4808b5d0cfc8d5609a31501717fe292286466131639194dd82acd079e",
     "comsect1_maint/test/maint_support.py": "961fa3dcf398562ff78ae5e2282e218a936d2ce0c6ce85b0809c144678228ad0",
     "comsect1_maint/test/test_config.py": "409c12a4820e667265c6b9c13dfcc9dab962bf56e9ef43ec1f8c7c425007d359",

@@ -12,9 +12,9 @@
     "frontend_standards": ["c99", "c11", "c17", "c23"]
   },
   "expected_sha256": {
-    "gate": "aacf605955fb4bbdf9b32247c18154208b96908dd66cf78d4e998e764af8ac69",
+    "gate": "237d371127a62507b26d9c0da007396e51fa4a85e2f33e0902473c5e04009856",
     "native_input": "4ec0f0dc5df87a51fd81b1f586c1defce078b1b02c584c9a7434d08a57ee38be",
-    "c_frontend": "debe0e0672079a7a0a10a98881d6022572e021fe4fe207de6774ec9ea5e6320d",
+    "c_frontend": "5214add618048f2e0f6ade99a86cf923e8cd8d6a576bdeca9b67df5cea16f27d",
     "libclang": "45f81b31a2004839da6f9479d8b6aa7013f7fe4ba01ebca77953f38e8ac7dec2"
   },
   "build": {
