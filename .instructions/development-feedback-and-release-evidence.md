@@ -32,6 +32,11 @@ The fast-feedback operation for the template-owned maintainer tools is
 tests travel with the package because they are common-layer content: the one
 exception to test source in `10_pkg/`.
 
+The C build tools of that package (`build.py`, `cross_build.py`) keep one
+reusable development cache, the object cache
+`90_temps/development/build/c_objects/` ([build optimization](./build-optimization.md)).
+A release-candidate build passes `--no-object-cache`.
+
 ## Release evidence
 
 Only a release candidate runs its complete required test suite, formal

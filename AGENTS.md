@@ -110,6 +110,7 @@
 - [Lifecycle and traceability](./.instructions/lifecycle-and-traceability.md)
 - [Development feedback and release evidence](./.instructions/development-feedback-and-release-evidence.md)
 - [Temporary output and cleanup](./.instructions/temporary-output-and-cleanup.md)
+- [Build optimization](./.instructions/build-optimization.md)
 - [Template adoption](./.instructions/fork-adoption.md)
 - [Licensing policy](./.instructions/licensing-policy.md)
 - [Refactoring and updates](./.instructions/refactoring-and-updates.md)

@@ -38,12 +38,29 @@ same external-linkage symbol fail the build (registry.require_unique_symbols).
 A gcc command line longer than Windows accepts is passed through a response
 file, recorded under `gcc_response_files`.
 
-    python -I -B 20_ops/tools/build.py --cell <name> [--run-id ID] [--run-tests]
+    python -I -B 20_ops/tools/build.py (--cell <name> ... | --all) [--run-id ID] [--run-tests]
                                       [--sanitize address|undefined] [--accept-tool-drift]
+                                      [--jobs N] [--no-object-cache]
+    python -I -B 20_ops/tools/build.py --prune-object-cache [--max-age-days D] [--max-bytes B]
 
-Prints `<stem>_library: <path>`; with `--run-tests` it then runs the Python
-tests of the Cell with `<STEM>_LIBRARY` set to that path. Any failure exits
-non-zero with a reason on stderr (fail closed).
+Prints `<stem>_library: <path>` per named Cell; with `--run-tests` it then runs
+the Python tests of each Cell with `<STEM>_LIBRARY` set to that path. Any
+failure exits non-zero with a reason on stderr (fail closed). Several `--cell`
+(or `--all`, every Cell with a windows target) build in one run: Cells that
+share a library (the same `library_plan`) build it once, and every unit is
+compiled once per run.
+
+Build speed (`.instructions/build-optimization.md`): the units, the ABI probes
+and the fixture units are compiled on `--jobs` worker threads (default: the
+logical processors), and the link order stays the registry order. gcc objects
+and their `nm` listings come from the content-addressed object cache
+(`object_cache`, development cache `90_temps/development/build/c_objects/`);
+`--no-object-cache` reuses objects inside the run only, which a release
+candidate build must use. A cached and an uncached build give byte-identical
+libraries, fixtures and image records. A product `run_command` hook observes
+real compiles: with it, product units are never served from the cache, and
+they compile one at a time unless the hook declares `concurrent = True` (it
+then numbers its observations by the context's `unit_index`).
 
 `--sanitize` builds a memory-safety verification variant of the same library;
 it is never a product. The exported set, the ABI probe and the build record are
@@ -68,6 +85,7 @@ import subprocess
 import sys
 
 from . import config as maint_config
+from . import object_cache
 from . import process
 from . import registry
 
@@ -85,6 +103,9 @@ WARNING_FLAGS = ["-Wall", "-Wextra", "-Werror", "-pedantic"]
 # A library link is reproducible: no PE time stamp, and a fixed image base instead of the one the
 # linker derives from the output path (the run directory). The same sources give the same bytes.
 REPRODUCIBLE_LINK_FLAGS = ["-Wl,--no-insert-timestamp", "-Wl,--disable-auto-image-base", "-Wl,--gc-sections"]
+# A test fixture link is reproducible too (no time stamp, fixed image base); it keeps every section, since
+# MinGW automatic export is its whole surface.
+FIXTURE_LINK_FLAGS = ["-Wl,--no-insert-timestamp", "-Wl,--disable-auto-image-base"]
 
 # Unit compilation optimization flags: speed optimization (-O2) with per-function/per-data sections
 # and no compiler .ident strings so --gc-sections removes unreferenced code/data cleanly.
@@ -110,6 +131,8 @@ MSVC_STANDARD_FLAGS = {"c11": "/std:c11", "c17": "/std:c17", "c23": "/std:clates
 MSVC_COMPILER_SYMBOL = re.compile(r"^(\?\?_C@|__real@|__xmm@|__ymm@|__asan|__odr_asan|_volmd$|\.)")
 
 REPO_ROOT = registry.REPO_ROOT
+OBJECT_CACHE_ROOT = object_cache.development_root(REPO_ROOT)
+OBJECT_CACHE_MODES = ("development", "run")
 RUN_ID_PATTERN = registry.RUN_ID_PATTERN
 RegistryError = registry.RegistryError
 get_cell = registry.get_cell
@@ -521,7 +544,47 @@ def _write_cell_image_record(stem, providers, library_path, digest):
     return record_name
 
 
-def _build_fixture(tested, cell, run_dir, object_dir, env):
+def open_object_cache(mode="development"):
+    """The object cache of a build: `development` (the repository's development cache), `run` (reuse
+    inside this process only, for a release candidate), or an `object_cache.ObjectCache` passed on."""
+    if isinstance(mode, object_cache.ObjectCache):
+        return mode
+    if mode == "run":
+        return object_cache.ObjectCache(None)
+    if mode == "development":
+        try:
+            return object_cache.ObjectCache(OBJECT_CACHE_ROOT, REPO_ROOT)
+        except (object_cache.CacheError, OSError) as error:
+            raise BuildError("object cache refused: %s" % error)
+    raise BuildError("unknown object cache mode %r (choose from %s)" % (mode, ", ".join(OBJECT_CACHE_MODES)))
+
+
+def _toolchain_identity(env):
+    try:
+        return object_cache.toolchain_identity(GCC_PATH, env)
+    except (object_cache.CacheError, OSError, subprocess.SubprocessError) as error:
+        raise BuildError("the identity of %s is unavailable: %s" % (GCC_PATH, error))
+
+
+def _compile_cached(cache, identity, command, object_path, source_path, env, run_dir, what):
+    """One gcc compile through the object cache (a hit copies a verified object)."""
+    return cache.compile(command, object_path, source_path, env, lambda argv: _run(argv, env, run_dir, what),
+                         os.path.join(run_dir, "tmp"), identity, IMAGE_TARGET)
+
+
+def _defined_symbols(cache, object_path, env, run_dir, what):
+    text = cache.tool_output([NM_PATH, "--defined-only", object_path], object_path,
+                             lambda argv: _run(argv, env, run_dir, what).stdout)
+    return registry.external_symbols(text)
+
+
+def _cache_delta(before, after):
+    delta = {key: after[key] - before[key] for key in after if isinstance(after[key], int)}
+    delta.update(mode=after["mode"], root=after["root"])
+    return delta
+
+
+def _build_fixture(tested, cell, run_dir, object_dir, env, cache=None, identity=None, jobs=1):
     """Build the test-only fixture library of `tested` (registry `test_fixture`) beside the library
     of `cell` that carries its tests, and return its record entry.
 
@@ -549,14 +612,21 @@ def _build_fixture(tested, cell, run_dir, object_dir, env):
         includes += _unit_includes(tested)
     sources = [(name, os.path.join(tested.fixture_root, name)) for name in tested.fixture_sources]
     sources += [(name, os.path.join(tested.root, *name.split("/"))) for name in tested.fixture_units]
-    objects = []
-    for name, source_path in sources:
+    cache = cache if cache is not None else open_object_cache("run")
+    identity = identity if identity is not None else _toolchain_identity(env)
+    flags = _unit_flags(tested)
+
+    def compile_fixture(item):
+        name, source_path = item
         object_path = os.path.join(object_dir, registry.object_name("fixture:%s:%s" % (tested.name, name)))
-        _run(_unit_flags(tested) + ["-O2", "-c"] + includes + ["-o", object_path, source_path],
-             env, run_dir, "compile fixture %s/%s" % (tested.name, name))
-        objects.append(object_path)
+        _compile_cached(cache, identity, flags + ["-O2", "-c"] + includes + ["-o", object_path, source_path],
+                        object_path, source_path, env, run_dir, "compile fixture %s/%s" % (tested.name, name))
+        return object_path
+
+    objects = process.ordered_map(compile_fixture, sources, jobs)
     fixture_path = os.path.join(run_dir, tested.fixture_library_name)
-    _run([GCC_PATH, "-shared", "-static-libgcc", "-o", fixture_path] + objects, env, run_dir, "fixture link")
+    _run([GCC_PATH, "-shared", "-static-libgcc"] + FIXTURE_LINK_FLAGS + ["-o", fixture_path] + objects,
+         env, run_dir, "fixture link")
     with open(fixture_path, "rb") as handle:
         digest = hashlib.sha256(handle.read()).hexdigest()
     exported = sorted(_exported_names(fixture_path, env, run_dir))
@@ -606,7 +676,8 @@ def _hook(name, required=False):
         raise BuildError(str(error))
 
 
-def build_library(cell_name, run_id, sanitize=None, accept_tool_drift=False):
+def build_library(cell_name, run_id, sanitize=None, accept_tool_drift=False, object_cache_mode="development",
+                  jobs=None):
     """Build the Cell library into a new run directory; returns the library path.
 
     A Cell with `library_from` (its required operations are bound by another Cell) is built as the
@@ -614,10 +685,17 @@ def build_library(cell_name, run_id, sanitize=None, accept_tool_drift=False):
     (registry.Cell.library_plan). The library links the Cell, its dependency closure and its
     `link_with` Cells; it exports the public functions of the Cells named by `exports` (default: the
     Cell). `sanitize` ("address" or "undefined") builds the memory-safety verification variant. The
-    maintainer tools must match their template manifest unless `accept_tool_drift`."""
+    maintainer tools must match their template manifest unless `accept_tool_drift`.
+    `object_cache_mode` is `development`, `run` or an `object_cache.ObjectCache` shared by several
+    builds of one run (open_object_cache); `jobs` bounds the compile workers (default: processors)."""
     settings = _settings()
     if sanitize is not None and sanitize not in SANITIZERS:
         raise BuildError("unknown sanitizer %r" % sanitize)
+    jobs = process.default_jobs() if jobs is None else jobs
+    if not isinstance(jobs, int) or jobs < 1:
+        raise BuildError("jobs must be a positive integer, found %r" % (jobs,))
+    cache = open_object_cache(object_cache_mode)
+    cache_before = cache.statistics(REPO_ROOT)
     try:
         tools = maint_config.maintainer_tools(settings.repo_root, accept_tool_drift, settings.language)
     except maint_config.ConfigError as error:
@@ -680,7 +758,8 @@ def build_library(cell_name, run_id, sanitize=None, accept_tool_drift=False):
     msvc_unit_flags = ["/O2", "/Z7", "/MD", "/fsanitize=address"]
 
     # ABI probes: compile only (-fsyntax-only), so no object or executable exists. One probe per
-    # probed Cell, built with that Cell's own flags and include roots.
+    # probed Cell, built with that Cell's own flags and include roots; the probes run in parallel.
+    probe_jobs = []
     for probe_cell in probed:
         probe_path = os.path.join(run_dir, "abi_probe.c" if probe_cell is cell else "abi_probe_%s.c" % probe_cell.name)
         with open(probe_path, "w", encoding="utf-8", newline="\n") as handle:
@@ -690,8 +769,11 @@ def build_library(cell_name, run_id, sanitize=None, accept_tool_drift=False):
             probe_includes += ["-I", membrane]
         for root in probe_cell.passive_include_roots() + probe_cell.standard_roots():
             probe_includes += ["-I", root]
-        _run(_unit_flags(probe_cell) + ["-fsyntax-only"] + probe_includes
-             + _probe_definitions(abis[probe_cell.name]) + [probe_path],
+        probe_jobs.append((probe_cell, probe_path, probe_includes, _unit_flags(probe_cell)))
+
+    def run_probe(job):
+        probe_cell, probe_path, probe_includes, probe_flags = job
+        _run(probe_flags + ["-fsyntax-only"] + probe_includes + _probe_definitions(abis[probe_cell.name]) + [probe_path],
              env, run_dir, "ABI probe of %s (mirror disagrees with the C header)" % probe_cell.name)
         if msvc_paths is not None:
             # The ASan variant is compiled by cl: its layout is probed by cl too (/Zs: syntax only).
@@ -700,6 +782,9 @@ def build_library(cell_name, run_id, sanitize=None, accept_tool_drift=False):
                                                          _probe_definitions(abis[probe_cell.name]) + ["/Zs", probe_path])[1:])
             _run([msvc_paths["cl"], response], msvc_env, run_dir,
                  "cl ABI probe of %s (mirror disagrees with the C header under MSVC)" % probe_cell.name)
+
+    process.ordered_map(run_probe, probe_jobs, jobs)
+    identity = _toolchain_identity(env)
 
     # Product input capture (an SDK receipt) before any Provider library is compiled.
     providers = [unit for unit in [cell] + linked if unit.provider]
@@ -723,32 +808,47 @@ def build_library(cell_name, run_id, sanitize=None, accept_tool_drift=False):
     defined = {}
     if NM_PATH is None or not os.path.isfile(NM_PATH):
         raise BuildError("nm is absent: cannot verify the external symbols are unique (%s)" % NM_PATH)
-    # Linked Cells first, then the Cell itself; each unit is compiled with its own Cell's flags.
-    for unit_cell in linked + [cell]:
-        unit_flags = _unit_flags(unit_cell)
-        unit_includes = _unit_includes(unit_cell)
-        for name in unit_cell.sources:
-            source_path = os.path.join(unit_cell.root, *name.split("/"))
-            context = {"cell": unit_cell, "source": source_path, "includes": unit_includes, "flags": unit_flags}
-            if msvc_paths is not None:
-                object_path = os.path.join(object_dir, registry.object_name("%s:%s" % (unit_cell.name, name),
-                                                                           ".obj"))
-                context["object"] = object_path
-                _execute("compile", _msvc_unit_command(msvc_paths, unit_cell, unit_includes, msvc_unit_flags
-                                                       + ["/c", "/Fo" + object_path, source_path]),
-                         msvc_env, run_dir, "cl %s/%s" % (unit_cell.name, name), context)
+    # Linked Cells first, then the Cell itself; each unit is compiled with its own Cell's flags. The units
+    # compile on the worker pool; the object list keeps this order, so the link order is the registry's.
+    # A product run_command hook observes every real compile: then the units compile one at a time.
+    run_hook = _hook("run_command")
+    hooked = run_hook is not None
+    # A hook that declares `concurrent = True` takes compiles from several workers; `unit_index` (the
+    # unit's place in the link order) lets it number its observations deterministically.
+    unit_jobs = jobs if not hooked or getattr(run_hook, "concurrent", False) is True else 1
+    cell_flags = {unit_cell.name: (_unit_flags(unit_cell), _unit_includes(unit_cell)) for unit_cell in linked + [cell]}
+    units = [(unit_cell, name) for unit_cell in linked + [cell] for name in unit_cell.sources]
+    unit_index = {(unit_cell.name, name): index for index, (unit_cell, name) in enumerate(units)}
+
+    def compile_unit(job):
+        unit_cell, name = job
+        unit_flags, unit_includes = cell_flags[unit_cell.name]
+        source_path = os.path.join(unit_cell.root, *name.split("/"))
+        context = {"cell": unit_cell, "source": source_path, "includes": unit_includes, "flags": unit_flags,
+                   "unit_index": unit_index[(unit_cell.name, name)]}
+        what = "compile %s/%s" % (unit_cell.name, name)
+        if msvc_paths is not None:
+            object_path = os.path.join(object_dir, registry.object_name("%s:%s" % (unit_cell.name, name), ".obj"))
+            context["object"] = object_path
+            _execute("compile", _msvc_unit_command(msvc_paths, unit_cell, unit_includes, msvc_unit_flags
+                                                   + ["/c", "/Fo" + object_path, source_path]),
+                     msvc_env, run_dir, "cl %s/%s" % (unit_cell.name, name), context)
+        else:
+            object_path = os.path.join(object_dir, registry.object_name("%s:%s" % (unit_cell.name, name)))
+            context["object"] = object_path
+            command = unit_flags + OPTIMIZE_FLAGS + sanitize_gcc + ["-c"] + unit_includes + ["-o", object_path, source_path]
+            if hooked:
+                _execute("compile", command, env, run_dir, what, context)
             else:
-                object_path = os.path.join(object_dir, registry.object_name("%s:%s" % (unit_cell.name, name)))
-                context["object"] = object_path
-                _execute("compile", unit_flags + OPTIMIZE_FLAGS + sanitize_gcc + ["-c"] + unit_includes
-                         + ["-o", object_path, source_path],
-                         env, run_dir, "compile %s/%s" % (unit_cell.name, name), context)
-            objects.append(object_path)
-            symbols = registry.external_symbols(
-                _run([NM_PATH, "--defined-only", object_path], env, run_dir, "nm %s/%s" % (unit_cell.name, name)).stdout)
-            if msvc_paths is not None:
-                symbols = [symbol for symbol in symbols if not MSVC_COMPILER_SYMBOL.match(symbol)]
-            defined["%s/%s" % (unit_cell.name, name)] = symbols
+                _compile_cached(cache, identity, command, object_path, source_path, env, run_dir, what)
+        symbols = _defined_symbols(cache, object_path, env, run_dir, "nm %s/%s" % (unit_cell.name, name))
+        if msvc_paths is not None:
+            symbols = [symbol for symbol in symbols if not MSVC_COMPILER_SYMBOL.match(symbol)]
+        return object_path, symbols
+
+    for (unit_cell, name), (object_path, symbols) in zip(units, process.ordered_map(compile_unit, units, unit_jobs)):
+        objects.append(object_path)
+        defined["%s/%s" % (unit_cell.name, name)] = symbols
     try:
         symbol_count = registry.require_unique_symbols(defined)
     except RegistryError as error:
@@ -768,7 +868,7 @@ def build_library(cell_name, run_id, sanitize=None, accept_tool_drift=False):
     # library links against it; it is test input and its symbols stay out of the export list.
     fixtures = {}
     if cell.link_fixture:
-        fixtures[cell.name] = _build_fixture(cell, cell, run_dir, object_dir, env)
+        fixtures[cell.name] = _build_fixture(cell, cell, run_dir, object_dir, env, cache, identity, jobs)
         libraries.append(os.path.join(run_dir, cell.fixture_library_name))
     runtime_sha256 = None
     link_context = {"cell": cell, "objects": objects, "definition": def_path, "libraries": libraries,
@@ -802,7 +902,7 @@ def build_library(cell_name, run_id, sanitize=None, accept_tool_drift=False):
 
     for tested in cell.tested_cells():
         if tested.test_fixture is not None and tested.name not in fixtures:
-            fixtures[tested.name] = _build_fixture(tested, cell, run_dir, object_dir, env)
+            fixtures[tested.name] = _build_fixture(tested, cell, run_dir, object_dir, env, cache, identity, jobs)
 
     stray = [name for name in os.listdir(run_dir)
              if name.lower().endswith((".exe", ".o", ".obj", ".a"))]
@@ -837,6 +937,7 @@ def build_library(cell_name, run_id, sanitize=None, accept_tool_drift=False):
                                for name in sorted(os.listdir(tmp_dir))
                                if name.startswith("gcc_") and name.endswith(".json")],
         "maintainer_tools": tools,
+        "object_cache": _cache_delta(cache_before, cache.statistics(REPO_ROOT)),
     }
     if image_record is not None:
         record["image_record"] = image_record
@@ -858,9 +959,30 @@ def build_library(cell_name, run_id, sanitize=None, accept_tool_drift=False):
     return library_path
 
 
+def _requested_cells(args):
+    """The Cells named by --cell (in order, once each) or, with --all, every Cell with a windows target."""
+    if args.all:
+        return [cell for _name, cell in sorted(registry.load_registry()["cells"].items()) if "windows" in cell.targets]
+    names = []
+    for name in args.cell:
+        if name not in names:
+            names.append(name)
+    return [get_cell(name) for name in names]
+
+
+def prune_object_cache(max_age_days=object_cache.DEFAULT_MAX_AGE_DAYS, max_bytes=object_cache.DEFAULT_MAX_BYTES,
+                       announce=None):
+    """Evict unused entries of the development object cache (object_cache.prune); returns the counts."""
+    try:
+        return object_cache.prune(OBJECT_CACHE_ROOT, REPO_ROOT, max_age_days, max_bytes, announce=announce)
+    except (object_cache.CacheError, OSError, RuntimeError) as error:
+        raise BuildError("object cache prune failed: %s" % error)
+
+
 def main(argv):
-    parser = argparse.ArgumentParser(description="Build one Cell as a shared library.")
-    parser.add_argument("--cell", required=True, help="Cell name of the registry")
+    parser = argparse.ArgumentParser(description="Build Cells as shared libraries.")
+    parser.add_argument("--cell", action="append", default=[], help="Cell name of the registry (repeatable)")
+    parser.add_argument("--all", action="store_true", help="every Cell with a windows target")
     parser.add_argument("--run-id", default=None)
     parser.add_argument("--run-tests", action="store_true",
                         help="run the Python tests of the Cell against the built library")
@@ -868,34 +990,72 @@ def main(argv):
                         help="memory-safety variant: address (MSVC ASan) or undefined (gcc UBSan, trap mode)")
     parser.add_argument("--accept-tool-drift", action="store_true",
                         help="build although the maintainer tools differ from their template manifest (recorded)")
+    parser.add_argument("--jobs", type=int, default=None,
+                        help="parallel compile workers (default: the logical processors)")
+    parser.add_argument("--no-object-cache", action="store_true",
+                        help="reuse objects inside this run only (required for a release candidate build)")
+    parser.add_argument("--prune-object-cache", action="store_true",
+                        help="evict unused entries of the development object cache, then exit")
+    parser.add_argument("--max-age-days", type=float, default=object_cache.DEFAULT_MAX_AGE_DAYS)
+    parser.add_argument("--max-bytes", type=int, default=object_cache.DEFAULT_MAX_BYTES)
     args = parser.parse_args(argv)
+    if args.prune_object_cache:
+        if args.cell or args.all:
+            parser.error("--prune-object-cache builds nothing; drop --cell and --all")
+        try:
+            counts = prune_object_cache(args.max_age_days, args.max_bytes, announce=print)
+        except BuildError as error:
+            sys.stderr.write("build: FAIL: %s\n" % error)
+            return 1
+        print("object cache: %s" % json.dumps(counts, sort_keys=True))
+        return 0
+    if bool(args.cell) == bool(args.all):
+        parser.error("name the Cells with --cell, or use --all")
+    if args.jobs is not None and args.jobs < 1:
+        parser.error("--jobs must be at least 1")
+    run_id = args.run_id or new_run_id()
+    built = {}
+    libraries = []
     try:
-        cell = get_cell(args.cell)
+        cells = _requested_cells(args)
         sanitize = parse_sanitize(args.sanitize)
-        library = build_library(cell.name, args.run_id or new_run_id(), sanitize, args.accept_tool_drift)
+        # One cache for the whole run: a unit that two libraries link is compiled once.
+        cache = open_object_cache("run" if args.no_object_cache else "development")
+        for cell in cells:
+            library_cell = cell.library_plan()[0].name
+            if library_cell not in built:
+                built[library_cell] = build_library(cell.name, run_id, sanitize, args.accept_tool_drift, cache,
+                                                    args.jobs)
+            libraries.append((cell, built[library_cell]))
     except (BuildError, RegistryError) as error:
         sys.stderr.write("build: FAIL: %s\n" % error)
         return 1
-    print("%s_library: %s" % (cell.stem, library))
+    for cell, library in libraries:
+        print("%s_library: %s" % (cell.stem, library))
     if not args.run_tests:
         return 0
-    # The Cells whose tests run: the requested one and, when it carries their library, the bound Cells
-    # (not a Cell that owns a library of its own over this one's binding).
+    # The Cells whose tests run: each requested one and, when it carries their library, the bound Cells
+    # (not a Cell that owns a library of its own over this one's binding); each Cell's tests run once.
     code = 0
-    for test_cell in cell.tested_cells():
-        env = dict(os.environ)
-        env[test_cell.library_environment] = library
-        env["PYTHONDONTWRITEBYTECODE"] = "1"
-        if sanitize == "address":
-            # Stop at the first report; leak detection is not supported by the Windows runtime.
-            env.setdefault("ASAN_OPTIONS", "halt_on_error=1:detect_leaks=0")
-        try:
-            done = subprocess.run([sys.executable, "-I", "-B", "-m", "unittest", "discover", "-v",
-                                   "-s", test_cell.tests_root, "-p", test_cell.test_pattern],
-                                  env=env, stdin=subprocess.DEVNULL, timeout=TOOL_TIMEOUT_SECONDS * 2,
-                                  creationflags=process.window_flags())
-        except subprocess.TimeoutExpired:
-            sys.stderr.write("build: FAIL: tests of %s timed out\n" % test_cell.name)
-            return 1
-        code = max(code, done.returncode)
+    tested = set()
+    for cell, library in libraries:
+        for test_cell in cell.tested_cells():
+            if test_cell.name in tested:
+                continue
+            tested.add(test_cell.name)
+            env = dict(os.environ)
+            env[test_cell.library_environment] = library
+            env["PYTHONDONTWRITEBYTECODE"] = "1"
+            if sanitize == "address":
+                # Stop at the first report; leak detection is not supported by the Windows runtime.
+                env.setdefault("ASAN_OPTIONS", "halt_on_error=1:detect_leaks=0")
+            try:
+                done = subprocess.run([sys.executable, "-I", "-B", "-m", "unittest", "discover", "-v",
+                                       "-s", test_cell.tests_root, "-p", test_cell.test_pattern],
+                                      env=env, stdin=subprocess.DEVNULL, timeout=TOOL_TIMEOUT_SECONDS * 2,
+                                      creationflags=process.window_flags())
+            except subprocess.TimeoutExpired:
+                sys.stderr.write("build: FAIL: tests of %s timed out\n" % test_cell.name)
+                return 1
+            code = max(code, done.returncode)
     return code

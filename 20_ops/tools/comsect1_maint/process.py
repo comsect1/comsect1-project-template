@@ -136,6 +136,46 @@ def run_process(name, command, timeout, cwd, log_path=None, env=None):
     return process.returncode, out, err
 
 
+def default_jobs():
+    """The worker count of a parallel build step: the logical processors of the host."""
+    return max(1, os.cpu_count() or 1)
+
+
+def ordered_map(function, items, jobs):
+    """`[function(item) for item in items]` on at most `jobs` worker threads (for child processes).
+
+    Results keep the order of `items` whatever the completion order. After the first failure no further
+    item starts; the running ones finish, and the failure of the earliest failed item is raised."""
+    items = list(items)
+    if jobs is None:
+        jobs = default_jobs()
+    if jobs < 1:
+        raise ValueError("jobs must be at least 1")
+    if jobs == 1 or len(items) <= 1:
+        return [function(item) for item in items]
+    import concurrent.futures
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(jobs, len(items))) as pool:
+        futures = [pool.submit(function, item) for item in items]
+        failure = None
+        results = []
+        for future in futures:
+            if failure is not None:
+                future.cancel()
+            try:
+                results.append(future.result())
+            except concurrent.futures.CancelledError:
+                results.append(None)
+            except BaseException as error:  # noqa: B902 - re-raised after the pool drains
+                if failure is None:
+                    failure = error
+                    for pending in futures:
+                        pending.cancel()
+                results.append(None)
+    if failure is not None:
+        raise failure
+    return results
+
+
 # ---------------------------------------------------------------- links and quarantine
 
 def is_link(path):

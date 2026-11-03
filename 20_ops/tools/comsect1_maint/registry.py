@@ -569,19 +569,35 @@ def _git(checkout, arguments):
     return done.stdout.strip()
 
 
+# Pin checks that passed in this process: (pin path, pin bytes, checkout) -> include directory. One tool
+# process checks a pin once, not once per compiled unit.
+_CHECKED_STANDARD_ROOTS = {}
+
+
 def standard_include_root(settings=None):
     """The include directory of the pinned fnd-sdk-standard checkout, after the pin check: the checkout
     named by the pin's root_variable lies outside this repository, is at the pinned commit, is clean and
-    holds the public header (fail closed)."""
+    holds the public header (fail closed). A check that passed is reused for the same pin and checkout
+    for the rest of the process."""
     settings = _settings(settings)
     _require(settings.host_build is not None, "the configuration names no fnd-sdk-standard pin")
     pin_path = settings.path_of(settings.host_build["standard_pin"])
     try:
-        with open(pin_path, "r", encoding="utf-8") as handle:
-            pin = json.load(handle)
+        with open(pin_path, "rb") as handle:
+            pin_bytes = handle.read()
+        pin = json.loads(pin_bytes.decode("utf-8"))
     except (OSError, ValueError) as error:
         raise RegistryError("the fnd-sdk-standard pin is unreadable: %s" % error)
+    _require(isinstance(pin, dict), "the fnd-sdk-standard pin is not an object")
     root = os.environ.get(pin.get("root_variable", ""), "")
+    memo = (os.path.normcase(os.path.abspath(pin_path)), pin_bytes, root)
+    if memo in _CHECKED_STANDARD_ROOTS:
+        return _CHECKED_STANDARD_ROOTS[memo]
+    _CHECKED_STANDARD_ROOTS[memo] = found = _check_standard_root(settings, pin, root)
+    return found
+
+
+def _check_standard_root(settings, pin, root):
     _require(root and os.path.isdir(root), "%s does not name the fnd-sdk-standard checkout" % pin.get("root_variable"))
     checkout, repo = os.path.realpath(root), os.path.realpath(settings.repo_root)
     inside = os.path.splitdrive(checkout)[0].lower() == os.path.splitdrive(repo)[0].lower() \
