@@ -18,6 +18,7 @@ Comsect1 Specification law.
 - [kind/](./kind/README.md): repository-owned kind classification and durable kind guidance
 - [local/](./local/README.md): repository-owned project-specific instruction index
 - [text-format-policy.md](./text-format-policy.md): canonical text bytes, verification, and explicit automatic correction
+- [readme-template.md](./readme-template.md): the fixed structure of the external product `README.md`
 - [runtime-location-and-environment.md](./runtime-location-and-environment.md): family runtime home grouping (`<family>`), platform base paths, dot-prefix (`.`) rule, and `<FAMILY>_HOME` override hierarchy
 - [comsect1-cell-authoring.md](./comsect1-cell-authoring.md): self-contained Cell control, zone, role, classification, and prefix decisions
 - [templates/](./templates/): reusable work, readiness, issue, and cleanup records

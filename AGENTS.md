@@ -120,4 +120,5 @@
 - [Repository-kind instructions](./.instructions/kind/README.md)
 - [Repository-local instructions](./.instructions/local/README.md)
 - [Text format policy](./.instructions/text-format-policy.md)
+- [README template](./.instructions/readme-template.md)
 - [Runtime location and environment policy](./.instructions/runtime-location-and-environment.md)

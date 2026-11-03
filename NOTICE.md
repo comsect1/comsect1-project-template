@@ -3,7 +3,7 @@
 ## Primary Project
 This project scaffold is part of the Comsect1 architecture standard.
 
-Copyright (c) 2026 Kim Hyeongjeong (comsect1). All rights reserved.
+Copyright 2026 Kim Hyeongjeong (comsect1)
 
 Author: Kim Hyeongjeong
 Organization: comsect1 (https://github.com/comsect1)
