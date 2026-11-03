@@ -5,14 +5,14 @@ instructions, DCB adoption) done; record and deviations in section 14. Steps
 10 to 14 (HSB, WSB, Hatbit, Sunset, closing T2) are open. Work revision r3
 (2026-11-03): build optimization (object cache, parallel compilation), section 15.
 
-Authority: `fnd-architecture` reference model section 8, finding T2
+Authority: `fnd-platform-architecture` reference model section 8, finding T2
 ("`native_gate.py`, `native_path_guard.py`, `cross_build.py`,
 `cell_registry.py` and `build.py` are copied between DCB, HSB, WSB and
 Sunset"); recommendation already recorded there: move the shared maintainer
 tools into the project template and keep product configuration local.
 
 Scope: maintainer-only tools under `20_ops/tools/`. The SDK-user tool
-`tools/comsect1_sdk.pyz` (Foundation `fnd-sdk-standard`, distribution 8.5,
+`tools/comsect1_sdk.pyz` (Foundation `fnd-platform-architecture`, distribution 8.5,
 finding T1) is SDK content and stays out of this design; see section 9.
 
 ## 1. Evidence: what is copied today
@@ -376,7 +376,7 @@ Behaviour equivalence per product: run `gate.py --cell <cell> --target windows`,
 
 ## 9. Boundary to the common SDK tool (T1)
 
-`fnd-sdk-standard` `10_pkg/sdk_tool/comsect1_sdk_tool` builds
+`fnd-platform-architecture` `10_pkg/sdk_tool/comsect1_sdk_tool` builds
 `tools/comsect1_sdk.pyz`, shipped in every Tier 2 SDK (DCB, HSB, WSB, Gantry)
 for SDK *users* (`install-sdk`, `bundle-runtime`). `comsect1_maint`
 is for *maintainers* and is never shipped: it is not a recipe input, never
@@ -510,7 +510,7 @@ maintainer tools at <baseline>", preceded by the before-run of section 8:
     `sdk_link_libraries`, `provider_export_aliases`, `provider_family: hook`);
     `product_hooks.py` (section 11); delete the six product copies and the
     duplicate report test; run; record; update `template-origin.json`.
-14. Close T2 in `fnd-architecture` section 8 with the baseline commit and the
+14. Close T2 in `fnd-platform-architecture` section 8 with the baseline commit and the
     four product commits; open the two section 10 findings (package.py
     release helpers; WSB consumer tools as SDK content).
 
