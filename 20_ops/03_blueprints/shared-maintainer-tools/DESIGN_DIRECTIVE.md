@@ -2,7 +2,8 @@
 
 Date: 2026-11-02. Work revision r2: stage 1 (steps 1 to 9: template package,
 instructions, DCB adoption) done; record and deviations in section 14. Steps
-10 to 14 (HSB, WSB, Hatbit, Sunset, closing T2) are open.
+10 to 14 (HSB, WSB, Hatbit, Sunset, closing T2) are open. Work revision r3
+(2026-11-03): build optimization (object cache, parallel compilation), section 15.
 
 Authority: `fnd-architecture` reference model section 8, finding T2
 ("`native_gate.py`, `native_path_guard.py`, `cross_build.py`,
@@ -634,3 +635,179 @@ shim lines and `maint_config.json`); the record is
 - Every product: tests that patch a module global through a shim must patch
   `<shim>._implementation` (the package module); the template test
   `test_shims.py` asserts every shim exposes its module.
+
+## 15. Build optimization (r3, 2026-11-03)
+
+Owner request: a build and compile optimization policy for the C build tools,
+decided by recommendation. The policy is the common instruction
+`.instructions/build-optimization.md`; this section is its design and
+measurement record. Template commit `073aa7a` (code, tests, instruction);
+products adopt it by synchronization.
+
+### 15.1 Where the time went
+
+Profile of `build.py --cell tcp` in DCB (one process, before; `subprocess`
+wrapped and timed): 70.5 s in all, 69.7 s in child processes, 0.8 s Python.
+
+| Step | Calls | Seconds | Mean |
+|---|---|---|---|
+| gcc compile | 70 | 51.8 | 0.74 |
+| nm | 69 | 7.9 | 0.11 |
+| ABI probes (`-fsyntax-only`) | 7 | 3.9 | 0.56 |
+| git (pin check, repeated per unit Cell) | 16 | 2.9 | 0.18 |
+| link (library and fixture) | 2 | 2.7 | 1.33 |
+| objdump | 2 | 0.5 | 0.23 |
+
+No unit was compiled twice inside that run, but six Cells (`serial`, `tcp`,
+`udp`, `driver`, `host`, `windows`) build the same `dcb_windows.dll`, and
+`abi`, `binder` and `superloop` link most of the same units again: across the
+15-Cell sequence the same sources were compiled up to seven times.
+`cross_build.py` compiled each dependency Cell once per consumer and core.
+Everything was sequential on a 20-processor host. Image-record and digest work
+was below 0.1 s.
+
+### 15.2 Design
+
+- `comsect1_maint/object_cache.py`: two-level content-addressed cache (manifest
+  key without the dependency closure, object key with it, from gcc `-MD`), so
+  a hit needs no preprocessor run. Toolchain identity = driver path, version,
+  machine, SHA-256 of driver, `cc1` and `as`. The directory listing of every
+  dependency directory and include root is keyed too (a new header earlier on
+  the search path is a miss). Objects are stored once by SHA-256 (`blobs/`) and
+  verified on every read. `nm` and `size` listings are cached by tool digest,
+  arguments and object digest. Atomic publication by `os.replace` with retry;
+  in one process a second worker with the same manifest key waits for the
+  first. A command with a relative path is not cached; a failed compile is not
+  stored. `ObjectCache(None)` is the in-run store (`--no-object-cache`).
+- Pool: `process.ordered_map` (threads driving child processes), default
+  `os.cpu_count()`, `--jobs` override; results and link/archive order stay the
+  sequential order; after the first failure no item starts.
+- `host_build`: units, ABI probes and fixture units on the pool; `--cell` may
+  repeat and `--all` builds every windows Cell, a shared library once per run;
+  `--prune-object-cache`; the record gains `object_cache` (counts of this
+  build). A `run_command` hook keeps observing real compiles (never served from
+  the cache); a hook that declares `concurrent = True` receives
+  `context["unit_index"]` and compiles run on the pool (WSB).
+- `cross_build`: one job list over every (Cell, core, unit), so a dependency
+  unit is compiled once per core and run, and served from the cache after.
+- `registry.standard_include_root`: the pin check (two git calls) runs once per
+  process for the same pin and checkout.
+- Fixture links gained `--no-insert-timestamp --disable-auto-image-base`
+  (`FIXTURE_LINK_FLAGS`): DCB built six different `dcb_host_fixture.dll`
+  digests from one source set before; now one. A non-deterministic output
+  would also defeat byte-identity checks of the cache.
+- Release candidates: DCB, WSB and Sunset `package.py` pass
+  `--no-object-cache` / `object_cache_mode="run"` (the common rule: a release
+  candidate never reuses a development cache).
+
+### 15.3 Measurements
+
+Same machine (20 logical processors, loaded by other sessions throughout),
+2026-11-03, sequential `build.py --cell <c>` for every Cell with a windows
+target (DCB 14, WSB 9; `freertos` is arm only), then `cross_build.py --archive`
+for every arm Cell; Sunlit: `providers/build.py --cell` and
+`providers/cross_build.py --cell` for its 8 Provider Cells. Wall seconds.
+"cold" starts from an empty cache (it fills during the sequence); "warm" is the
+same sequence again; "no cache" is `--no-object-cache` (pool and in-run reuse
+only).
+
+| Product, step | Before | No cache | Cold | Warm |
+|---|---|---|---|---|
+| DCB host, 14 Cells | 668.4 | 171.8 | 138.2 | 72.6 |
+| DCB cross, 13 Cells x 2 cores | 369.1 | 28.6 | 29.2 | 14.1 |
+| DCB `build.py --all` (one run) | - | 43.6 | - | 19.9 |
+| WSB host, 9 Cells | 277.0 | - | 63.6 | 78.8 |
+| Sunlit host, 8 Cells | 104.7 | - | 37.4 | 27.6 |
+| Sunlit cross, 8 Cells x 2 cores | 141.6 | - | 42.5 | 24.6 |
+
+Per-Cell DCB host (before / cold / warm): horizon 4.5/9.4/2.7, engine
+13.9/11.1/2.7, serial 62.1/27.3/7.6, tcp 69.4/9.4/6.8, udp 65.7/9.3/7.7, driver
+64.0/12.7/7.9, binder 70.0/17.2/6.6, abi 84.2/6.5/6.4, host 100.0/8.6/6.3,
+framing 6.5/4.7/2.2, shell 8.0/3.2/2.3, signal 3.0/4.0/2.2, windows
+78.0/8.3/6.7, superloop 39.1/6.5/4.4. A warm DCB library build is now bounded
+by its ABI probes (7 x 0.77 s on the pool for `tcp`), two links (1.1 s),
+process start and the image record; probe results are not cached (their
+source is generated in the run directory; a later increment can key them by
+content).
+
+WSB: its `run_command` hook (`native_build_evidence.observe`) runs a real,
+observed compile plus a dependency scan for every product unit, so warm equals
+cold within the load noise of the machine; the gain is the pool (product
+units, probes, fixtures) and cached fixture objects and `nm` listings.
+
+### 15.4 Byte identity
+
+Digest of every output file except `tmp/` (run records compared with `run_id`,
+`maintainer_tools`, `object_cache` and response-file records removed):
+
+- DCB: cold = warm = no cache, 620 of 620 files (14 host runs and the cross run:
+  libraries, `.def`, image records, fixtures, every Arm object and archive,
+  `summary.json`). Before vs after: identical except the fixture libraries and
+  their image records and the `fixtures` member of the build record (the
+  reproducible fixture link, 15.2); every product library and Arm archive keeps
+  its bytes.
+- WSB: cold = warm; before vs after identical except the fixture libraries
+  (same cause).
+- Sunlit: cold = warm; host libraries and image records identical to before;
+  the Arm archives differ from before only because `providers/cross_build.py`
+  archived with `ar rcs`, which stamps member times (`Nov 03 11:08 2026`); it
+  now uses `rcsD` (members dated 1970-01-01), so each revision gives one
+  archive. Objects are identical.
+
+### 15.5 Flags (measured, item 5 of the request)
+
+Each variant built in-run only (`object_cache_mode="run"`), same machine.
+
+| Variant | Time (s) | Result | Decision |
+|---|---|---|---|
+| Host `-O2 -ffunction-sections -fdata-sections -fno-ident`, link `--gc-sections` (current), `dcb_windows.dll`, `--jobs 1`, two runs | 56.9, 57.8 | 313,674 bytes, SHA-256 `23b0787f...` | kept |
+| Host + `-pipe`, same | 74.2, 54.9 | same bytes | not adopted: no measurable gain under this load |
+| DCB Cortex-M `-Os` with sections and `-fno-ident` (current), 13 Cells x 2 cores | 20.2 | text 112,314, every budget met | kept |
+| DCB Cortex-M `-O2` instead of `-Os` | 23.3 | text 131,820 (+17.4 %); `serial` m0plus 2,088 > 2,048, `shell` m4 9,740 > 8,192 and m0plus 10,008 > 8,192, `signal` m4 2,680 > 2,560 | refused (budgets) |
+| DCB Cortex-M without `-ffunction-sections -fdata-sections` | 21.3 | text 112,284 (-30, alignment) | kept with sections: an image link with `--gc-sections` drops unused functions only with them |
+| DCB Cortex-M + `-pipe` | 19.5 | same sizes | not adopted: within noise |
+| Sunlit Cortex-M `-ffreestanding -nostdlib -Os` (current), 8 Cells x 2 cores | 37.5 | text 120,566, every budget met | kept |
+| Sunlit + `-ffunction-sections -fdata-sections -fno-ident` | 33.5 | text 120,560; per Cell and core -6 to +8 bytes (`osp` m4 +8, `sunshine_link` m4 +7), every budget met | not adopted now: some Cells grow by a few bytes and the gain appears only in a `--gc-sections` image link, which Sunlit does not measure; recommended once a firmware image link of a Sunlit Provider is measured |
+
+No flag that changes semantics was tried or added. Every compile flag stays as
+it was; the only link change is the fixture reproducibility (15.2).
+
+### 15.6 Product adoption
+
+| Product | Commit | Content |
+|---|---|---|
+| DCB | `07112980` | sync to `073aa7a`; `package.py` `--no-object-cache`; `local/c-build-and-test.md` names the cache, `--all`, `--jobs`, `--prune-object-cache` |
+| WSB | `9c54b0d7` | sync to `073aa7a`; `product_hooks.py` `run_command.concurrent = True`, observations numbered by `unit_index`; `package.py` `--no-object-cache`; `local/c-build-and-test.md` |
+| Hatbit template | `786c98e` | sync to `073aa7a` (also carries `7f58df9` and `c2bc7df`) |
+| Sunset | `81cd577` | sync from the Hatbit template; `package.py` `--no-object-cache`; `local/c-build-and-test.md` |
+| Sunlit | `0759bc0` | sync from the Hatbit template; `providers/build.py` and `providers/cross_build.py` compile through `comsect1_maint.object_cache` on the pool (`--jobs`, `--no-object-cache`), `ar rcsD`; `providers/registry.py` loads the package by file path |
+
+### 15.7 Verification
+
+- Template and Hatbit template: `comsect1_maint/test` 101 tests pass (17 new in
+  `test_object_cache.py`: depfile parsing, absolute-path rule, ordered pool,
+  miss then hit with identical bytes, cold = warm down to an `ar rcsD` archive,
+  in-run store, header change, shadowing header, compiler identity, argument,
+  environment, source and target keys, corrupt blob repair, relative command
+  and failed compile not stored, `nm` listing cache, 8 threads plus 4 processes
+  writing one entry, pruning by age and size through `99_trash`, linked cache
+  root refused).
+- DCB: every suite folder of `10_pkg/test` and `comsect1_maint/test`; all pass
+  (`tool/package` 79 tests with the `--no-object-cache` release builds) except
+  `tool/wsb` (3, need a WSB checkout and current profile, failing before this
+  change too, record 14.2) and one run of
+  `test_dcb_driver_timing...test_sixty_hertz_paced_send_over_tcp_through_two_drivers`
+  under machine load (the suite passed 34 of 34 when run again).
+- WSB: `build.py --all --run-tests` (9 Cells) passes; `tool/build`,
+  `tool/package`, `tool/native_publication` pass; failures only where the
+  environment lacks `WSB_NATIVE_TOOLCHAIN_ROOT` (`tool/gate`) or
+  `WSB_FOUNDATION_TEST_ARCHIVE` (`python`), and `tool/registry` expects one
+  `fixture_units` entry where WSB's `cells.json` has two (repository state,
+  not the tools).
+- Sunset: `build.py --all --run-tests` (4 Cells) passes; `tool/gate`,
+  `tool/native_gate`, `tool/package` pass; `python` needs
+  `SUNSET_VECTORCAST_TEST_ROOT`.
+- Sunlit: `providers/build.py --cell <c> --run-tests` and
+  `providers/cross_build.py --cell <c>` for all 8 Cells, `virtual_board` (25),
+  `comsect1_maint/test` and `recipes.py check` pass.
+- `sync.py --check` and `text_format.py` pass in all six repositories.
