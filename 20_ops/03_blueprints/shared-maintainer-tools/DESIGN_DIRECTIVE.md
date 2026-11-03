@@ -841,3 +841,15 @@ HEAD no product could build.
   the run locks and the closure's resource membership stay.
 - The object cache needed no change: its key is the bytes of the `-MD` closure
   read from the resolved root.
+- Error handling (owner, same day: apart from ABI negotiation everything is a
+  metadata-preserving read; strengthen error handling): the Foundation and
+  external checkout errors name the variable, its value, `local_root`, the pin
+  path, the pinned commit, the observed HEAD and dirty state and a next step,
+  and carry them as `RegistryError.details`. An ABI probe failure is measured
+  again (`_abi_mismatch`: gcc names each size, offset and constant in its
+  int-to-pointer diagnostic, so nothing is run) and reports expected and found
+  values, the mirror and header paths and a next step. A failed `host_build`
+  run writes `build_record.json` with `result: failed`, `error`, `details`,
+  the Foundation identity and the tools; a failed `cross_build` run writes
+  `summary.json` the same way; unreadable metadata is a note. Export mismatch
+  and Gate set errors name the paths, the release set and a next step.

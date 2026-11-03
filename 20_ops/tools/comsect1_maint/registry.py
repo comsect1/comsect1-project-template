@@ -93,7 +93,12 @@ STANDARD_PIN_PATH = _SETTINGS.path_of(_SETTINGS.host_build["standard_pin"]) \
 
 
 class RegistryError(Exception):
-    """The registry or a Cell layout is invalid; the message is the reason."""
+    """The registry or a Cell layout is invalid; the message is the reason. `details` (a dict) holds the
+    resolved paths and the recorded identity of a failed resolution for the build or run record."""
+
+    def __init__(self, message, details=None):
+        super().__init__(message)
+        self.details = details or {}
 
 
 def _require(condition, message):
@@ -337,7 +342,15 @@ class Cell:
         roots = []
         for relative in section["include_roots"] + section["core_include_roots"][core]:
             path = os.path.join(checkout, *relative.split("/"))
-            _require(os.path.isdir(path), "Cell %s: external include root %s is missing" % (self.name, path))
+            if not os.path.isdir(path):
+                observed = observed_checkout(checkout)
+                raise RegistryError(
+                    "Cell %s: external include root %s is missing in the checkout %s (from %s; HEAD %s, dirty %s, "
+                    "pinned commit %s). Next step: select a checkout of that header tree that holds %s."
+                    % (self.name, path, checkout, section["environment"], observed["head"], observed["dirty"],
+                       section["commit"], relative),
+                    dict(observed, root=checkout, environment=section["environment"], pinned_commit=section["commit"],
+                         missing=path))
             roots.append(path)
         configs = [os.path.join(repo_root, *r.split("/")) for r in section["config_roots"]]
         return roots, configs
@@ -345,11 +358,20 @@ class Cell:
     def _external_checkout_root(self):
         variable = self.external_headers["environment"]
         checkout = os.environ.get(variable)
-        _require(checkout and os.path.isdir(checkout),
-                 "Cell %s: %s must name the checkout of its external headers" % (self.name, variable))
+        details = {"environment": variable, "value": checkout, "pinned_commit": self.external_headers["commit"]}
+        if not checkout or not os.path.isdir(checkout):
+            raise RegistryError(
+                "Cell %s: the checkout of its external headers is not found: %s is %s (pinned commit %s, "
+                "recorded metadata). Next step: set %s to a checkout outside this repository that holds %s."
+                % (self.name, variable, "unset" if not checkout else "%s, not a directory" % checkout,
+                   self.external_headers["commit"], variable, ", ".join(self.external_headers["include_roots"])),
+                details)
         checkout = os.path.realpath(checkout)
-        _require(not _inside(checkout, self.settings.repo_root),
-                 "Cell %s: the checkout %s must lie outside this repository" % (self.name, checkout))
+        if _inside(checkout, self.settings.repo_root):
+            raise RegistryError(
+                "Cell %s: the checkout %s (from %s) lies inside this repository. Next step: point %s at a "
+                "checkout outside %s." % (self.name, checkout, variable, variable, self.settings.repo_root),
+                dict(details, root=checkout))
         return checkout
 
     def external_checkout(self):
@@ -660,15 +682,34 @@ def standard_checkout(settings=None):
 
 def _resolve_standard_checkout(settings, pin, override):
     source, root = ("environment", override) if override else ("local_root", pin.get("local_root") or "")
-    _require(root and os.path.isdir(root), "%s does not name the fnd-sdk-standard checkout%s"
-             % (pin["root_variable"], "" if source == "environment" else " and the pin has no usable local_root"))
-    checkout = os.path.realpath(root)
-    _require(not _inside(checkout, settings.repo_root),
-             "the fnd-sdk-standard checkout %s must lie outside this repository" % checkout)
-    header = os.path.join(checkout, *pin["public_header"].split("/"))
-    _require(os.path.isfile(header), "the fnd-sdk-standard public header is missing: %s" % header)
-    observed = observed_checkout(checkout)
     pinned = pin.get("commit") if isinstance(pin.get("commit"), str) else None
+    pin_path = settings.path_of(settings.host_build["standard_pin"])
+    details = {"root_variable": pin["root_variable"], "environment_value": override or None,
+               "local_root": pin.get("local_root"), "source": source, "pin": pin_path, "pinned_commit": pinned}
+    if not root or not os.path.isdir(root):
+        raise RegistryError(
+            "the fnd-sdk-standard checkout is not found: %s is %s and the pin's local_root is %s (pin %s, pinned "
+            "commit %s, recorded metadata). Next step: set %s to a fnd-platform-architecture checkout outside this "
+            "repository, or correct local_root in %s."
+            % (pin["root_variable"], "unset" if not override else "%s, not a directory" % override,
+               "absent" if not pin.get("local_root") else "%s%s" % (pin["local_root"], "" if os.path.isdir(
+                   pin["local_root"]) else ", not a directory"), pin_path, pinned, pin["root_variable"], pin_path),
+            details)
+    checkout = os.path.realpath(root)
+    if _inside(checkout, settings.repo_root):
+        raise RegistryError(
+            "the fnd-sdk-standard checkout %s (found through %s) lies inside this repository. Next step: point %s at a "
+            "checkout outside %s." % (checkout, source, pin["root_variable"], settings.repo_root),
+            dict(details, root=checkout))
+    header = os.path.join(checkout, *pin["public_header"].split("/"))
+    observed = observed_checkout(checkout)
+    if not os.path.isfile(header):
+        raise RegistryError(
+            "the fnd-sdk-standard public header %s is missing in the checkout %s (found through %s; HEAD %s, dirty %s, "
+            "pinned commit %s). Next step: select a Foundation checkout that holds %s (%s or local_root of %s)."
+            % (header, checkout, source, observed["head"], observed["dirty"], pinned, pin["public_header"],
+               pin["root_variable"], pin_path),
+            dict(details, root=checkout, head=observed["head"], dirty=observed["dirty"], missing=header))
     return {"root": checkout, "source": source, "root_variable": pin["root_variable"],
             "include_root": os.path.dirname(header), "pinned_commit": pinned,
             "head": observed["head"], "dirty": observed["dirty"],

@@ -8,19 +8,23 @@ installed SDK, the Gate set and its toolchain). Owner decision 2026-11-03.
 ## 1. No consumer locks
 
 A consumer never re-verifies the executables or libraries it consumes and
-never locks their version. The build, test and run tools of a consumer do not
-refuse on:
+never locks their version (owner, 2026-11-03: apart from ABI negotiation,
+everything is a metadata-preserving read). The build, test and run tools of a
+consumer, and a runtime engine admitting a Provider library, do not refuse on:
 
 - an exact commit pin, or a pinned checkout that is not clean at that commit;
-- an exact version or an upper version bound;
-- a content digest that differs from a recorded one.
+- an exact version or an upper version bound, or an exact SWID `tagId`;
+- a content digest that differs from a recorded one (a tool pin such as
+  `expected_sha256`, an admission record or a Provider manifest digest).
 
 ## 2. Allowed
 
 - A minimum version (floor), `"minimum_version": "<semver>"`, where the
   dependency has a version notion and a real minimum exists.
-- Interface negotiation: the C ABI identity and layout, Provider negotiate,
-  the MCP protocol revision.
+- Interface negotiation, the only condition that gates: the C ABI identity
+  and layout, Provider negotiate, the MCP protocol revision.
+- Data-format integrity needed to parse bytes safely: a frame checksum, a
+  binary record or profile trailer that frames the bytes being read.
 - Structural resolution: the dependency is found, lies outside the consumer
   repository, and holds the file the consumer includes or loads. Nothing can
   be compiled or run otherwise.
@@ -56,3 +60,14 @@ to a consumer's build or run:
 A repository's own synchronized common layer (`sync.py --check`, the
 maintainer tools drift check) is the repository's own content, not a consumed
 dependency.
+
+## 5. Error handling
+
+Every failure that remains (a dependency not found or not loadable, an ABI
+mismatch, a missing export, a Provider open failure, an unresolvable
+Foundation root) names the resolved path and how it was found, the version,
+tag id and observed SHA-256 read from metadata, the expected and found ABI
+values, and one concrete next step. The same information is written into the
+build or run record of the failed run (`build_record.json` and the
+cross-build `summary.json` carry `result: failed`, `error` and `details`).
+Metadata that cannot be read is a note in the record, never a failure.

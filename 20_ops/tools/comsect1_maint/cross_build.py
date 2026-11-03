@@ -156,7 +156,31 @@ def build(run_id, make_archive, cell_name=None, accept_tool_drift=False, object_
         raise CrossBuildError("run directory exists: %s" % run_dir)
     tmp_dir = os.path.join(run_dir, "tmp")
     os.makedirs(tmp_dir)
+    try:
+        return _build_run(run_id, make_archive, tools, cores, cells, run_dir, tmp_dir, object_cache_mode, jobs)
+    except (CrossBuildError, registry.RegistryError) as error:
+        _write_failure_summary(run_dir, run_id, error, tools)
+        raise
 
+
+def _write_failure_summary(run_dir, run_id, error, tools):
+    """summary.json of a failed run: the reason, its details (resolved paths, recorded identities) and the
+    Foundation identity when it was resolved. Writing it never hides the original failure."""
+    record = {"run_id": run_id, "result": "failed", "error": str(error),
+              "details": getattr(error, "details", {}), "maintainer_tools": tools}
+    try:
+        record["fnd_sdk_standard"] = registry.standard_record()
+    except Exception as note:  # unreadable metadata is a note in the record, never a second failure
+        record["fnd_sdk_standard"] = {"note": str(note)}
+    try:
+        with open(os.path.join(run_dir, "summary.json"), "w", encoding="utf-8", newline="\n") as handle:
+            json.dump(record, handle, indent=2, default=str)
+            handle.write("\n")
+    except (OSError, TypeError, ValueError) as note:
+        print("cross_build: note: the failure summary could not be written: %s" % note, file=sys.stderr)
+
+
+def _build_run(run_id, make_archive, tools, cores, cells, run_dir, tmp_dir, object_cache_mode, jobs):
     env = dict(os.environ)
     env["PATH"] = TOOLCHAIN_BIN_DIR + os.pathsep + env.get("PATH", "")
     env["TMP"] = env["TEMP"] = env["TMPDIR"] = tmp_dir
@@ -187,7 +211,7 @@ def build(run_id, make_archive, cell_name=None, accept_tool_drift=False, object_
     plan = []
     compile_jobs = []
     record = {"compiler": GCC_PATH, "compiler_version": version, "common_flags": COMMON_FLAGS,
-              "run_id": run_id, "results": [], "unique_external_symbols": {}}
+              "run_id": run_id, "result": "passed", "results": [], "unique_external_symbols": {}}
     external_by_core = {}  # core -> {unit label: external symbols}, each unit once
 
     for cell in cells:
@@ -327,6 +351,8 @@ def main(argv):
                                 "run" if args.no_object_cache else "development", args.jobs)
     except (CrossBuildError, registry.RegistryError) as error:
         print("cross_build: %s" % error, file=sys.stderr)
+        if getattr(error, "details", None):
+            print("cross_build: details: %s" % json.dumps(error.details, sort_keys=True, default=str), file=sys.stderr)
         return 1
     print("compiler: %s" % record["compiler_version"])
     print("run_dir: %s" % run_dir)

@@ -291,18 +291,22 @@ def resolve_gate_set(config):
         set_path = record["set_path"]
         set_id = record["release_set_id"]
     except (OSError, ValueError, KeyError, TypeError) as error:
-        raise ToolError(EXIT_TOOL_SET_UNAVAILABLE, "active Gate set record %s unusable: %s" % (active, error))
+        raise ToolError(EXIT_TOOL_SET_UNAVAILABLE, "active Gate set record %s (gate_set.runtime_root %s) unusable: %s. "
+                        "Next step: install a Gate set there or correct gate_set.runtime_root." % (active, root, error))
     if not isinstance(set_path, str) or not isinstance(set_id, str) or os.path.isabs(set_path) \
             or ".." in set_path.replace("\\", "/").split("/"):
         raise ToolError(EXIT_TOOL_SET_UNAVAILABLE, "active Gate set record has an unsafe set_path")
     bin_dir = root / set_path / gate_set["binary_subdirectory"]
     if not bin_dir.is_dir():
-        raise ToolError(EXIT_TOOL_SET_UNAVAILABLE, "Gate set binary directory %s is absent" % bin_dir)
+        raise ToolError(EXIT_TOOL_SET_UNAVAILABLE, "Gate set binary directory %s of release set %s (from %s) is absent. "
+                        "Next step: reinstall that set or select an installed one in %s." % (bin_dir, set_id, active, active))
     paths = {}
     for key in TOOL_KEYS:
         path = bin_dir / gate_set["binaries"][key]
         if not path.is_file():
-            raise ToolError(EXIT_TOOL_SET_UNAVAILABLE, "Gate set binary %s is absent" % path)
+            raise ToolError(EXIT_TOOL_SET_UNAVAILABLE, "Gate set binary %s (%s) of release set %s (from %s) is absent. "
+                            "Next step: reinstall that set or select an installed one in %s."
+                            % (path, key, set_id, active, active))
         paths[key] = path
     return bin_dir, paths, set_id
 

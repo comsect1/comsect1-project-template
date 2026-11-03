@@ -62,6 +62,21 @@ class LaneConfigTest(unittest.TestCase):
         self.assertEqual(differs, [key for key in driver.TOOL_KEYS if config["expected_sha256"][key] != actual[key]])
         self.assertTrue(differs)
 
+    def test_missing_gate_set_names_the_path_and_the_next_step(self):
+        root = self.work.path / "gate_runtime"
+        config = self.load(dict(BASE, gate_set=dict(BASE["gate_set"], runtime_root=str(root))), "gate_set")
+        with self.assertRaises(driver.ToolError) as caught:
+            driver.resolve_gate_set(config)
+        self.assertIn(str(root / "current.json"), caught.exception.message)
+        self.assertIn("Next step", caught.exception.message)
+        support.write(root / "current.json", json.dumps({"set_path": "sets/a", "release_set_id": "set-a"}))
+        (root / "sets" / "a" / "payload" / "bin").mkdir(parents=True)
+        with self.assertRaises(driver.ToolError) as caught:
+            driver.resolve_gate_set(config)
+        self.assertEqual(caught.exception.code, driver.EXIT_TOOL_SET_UNAVAILABLE)
+        for text in ("comsect1-gate.exe", "release set set-a", "Next step"):
+            self.assertIn(text, caught.exception.message)
+
     def test_analysis_standard_follows_the_frontend(self):
         self.assertEqual(driver.analysis_standard(self.load(BASE, "c23")), "c23")
         c11 = dict(BASE, build=dict(BASE["build"], standard="c11"))

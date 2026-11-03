@@ -172,6 +172,17 @@ class RegistryTest(unittest.TestCase):
             record = cell.external_checkout()
         self.assertEqual(roots, [os.path.join(os.path.realpath(str(kernel)), "include")])
         self.assertEqual((record["pinned_commit"], record["matches_pin"]), ("0" * 40, False))
+        os.rmdir(str(kernel / "include"))
+        with mock.patch.dict(os.environ, {"DCB_KERNEL": str(kernel)}):
+            with self.assertRaises(registry.RegistryError) as caught:
+                cell.external_roots("cortex-m4")
+        for text in ("external include root", "is missing", "from DCB_KERNEL", "0" * 40, "Next step"):
+            self.assertIn(text, str(caught.exception))
+        with mock.patch.dict(os.environ, {"DCB_KERNEL": ""}):
+            with self.assertRaises(registry.RegistryError) as caught:
+                cell.external_roots("cortex-m4")
+        self.assertIn("DCB_KERNEL is unset", str(caught.exception))
+        self.assertIn("Next step", str(caught.exception))
 
     def standard_product(self, name, local_root=None):
         root = self.work.folder(name)
@@ -208,13 +219,22 @@ class RegistryTest(unittest.TestCase):
         self.assertEqual((record["source"], record["dirty"]), ("local_root", False))
         settings, _ = self.standard_product("standard_none")
         with mock.patch.dict(os.environ, {"DCB_FND_SDK_STANDARD_ROOT": ""}):
-            with self.assertRaisesRegex(registry.RegistryError, "does not name the fnd-sdk-standard checkout"):
+            with self.assertRaises(registry.RegistryError) as caught:
                 registry.standard_checkout(settings)
+        for text in ("checkout is not found", "DCB_FND_SDK_STANDARD_ROOT is unset", "local_root is absent",
+                     "fnd_sdk_standard.json", "f" * 40, "Next step"):
+            self.assertIn(text, str(caught.exception))
+        self.assertEqual((caught.exception.details["source"], caught.exception.details["pinned_commit"]),
+                         ("local_root", "f" * 40))
         settings, foundation = self.standard_product("standard_header")
         os.remove(str(foundation / "10_pkg" / "include" / "comsect1_provider.h"))
         with mock.patch.dict(os.environ, {"DCB_FND_SDK_STANDARD_ROOT": str(foundation)}):
-            with self.assertRaisesRegex(registry.RegistryError, "public header is missing"):
+            with self.assertRaises(registry.RegistryError) as caught:
                 registry.standard_checkout(settings)
+        head = registry._git(str(foundation), ["rev-parse", "HEAD"])
+        for text in ("public header", "is missing", "found through environment", head, "Next step"):
+            self.assertIn(text, str(caught.exception))
+        self.assertEqual(caught.exception.details["head"], head)
         settings, _ = self.standard_product("standard_relative", local_root="relative/root")
         with self.assertRaisesRegex(registry.RegistryError, "absolute path"):
             registry.standard_checkout(settings)

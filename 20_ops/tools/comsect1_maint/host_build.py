@@ -143,7 +143,12 @@ REGISTRATION_PATTERN = re.compile(r"^%s_provider_([a-z][a-z0-9]*(?:_[a-z0-9]+)*)
 
 
 class BuildError(Exception):
-    """A build step failed; the message is the reason."""
+    """A build step failed; the message is the reason. `details` (a dict) holds what the build record of the
+    failed run keeps beside the message (resolved paths, expected and found ABI values)."""
+
+    def __init__(self, message, details=None):
+        super().__init__(message)
+        self.details = details or {}
 
 
 def _settings():
@@ -330,6 +335,79 @@ def _probe_source(cell, abi):
     return "\n".join(lines)
 
 
+# A measuring declaration per probed value: gcc names the array bound in its int-to-pointer diagnostic,
+# "initialization of 'char (*)[N]' from 'int'", so the found value is read without running anything.
+MEASURE_PATTERN = re.compile(r":(\d+):\d+: (?:error|warning): initialization of 'char \(\*\)\[(\d+)\]' from 'int'")
+
+
+def _measure_source(cell, abi):
+    """(source, [(line, key)]): one file-scope declaration per size, offset and non-negative constant, whose
+    array bound is the value plus one (a zero bound is not portable C)."""
+    lines = ["/* ABI measurement: syntax only, no code, no executable. */", "#include <stddef.h>"]
+    lines.extend('#include "%s"' % name for name in cell.contract_headers)
+    probes = []
+
+    def add(key, expression):
+        lines.append("static char (*measure_%d)[(%s) + 1] = 1;" % (len(probes), expression))
+        probes.append((len(lines), key))
+    for c_name, layout in abi.struct_layout().items():
+        add("sizeof(%s)" % c_name, "sizeof(%s)" % c_name)
+        for member in layout["offsets"]:
+            add("offsetof(%s, %s)" % (c_name, member), "offsetof(%s, %s)" % (c_name, member))
+    for name, value in abi.CONSTANTS.items():
+        if isinstance(value, int) and 0 <= value < 2 ** 31:
+            add(name, "(%s) >= 0 && (%s) < 0x7fffffff ? (%s) : 0" % (name, name, name))
+    return "\n".join(lines) + "\n", probes
+
+
+def _abi_expected(abi):
+    expected = {}
+    for c_name, layout in abi.struct_layout().items():
+        expected["sizeof(%s)" % c_name] = layout["size"]
+        for member, offset in layout["offsets"].items():
+            expected["offsetof(%s, %s)" % (c_name, member)] = offset
+    for name, value in abi.CONSTANTS.items():
+        expected[name] = value
+    return expected
+
+
+def _abi_mismatch(probe_cell, abi, command, env, run_dir, failure):
+    """A BuildError naming every ABI value that differs (expected from the mirror, found in the header as
+    gcc measures it), the mirror and the header paths and the next step; the values go to `details`."""
+    source, probes = _measure_source(probe_cell, abi)
+    path = os.path.join(run_dir, "abi_measure_%s.c" % probe_cell.name)
+    with open(path, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write(source)
+    found = {}
+    try:
+        done = subprocess.run(_gcc_response_command(command + [path], run_dir), env=env, cwd=run_dir,
+                              capture_output=True, text=True, stdin=subprocess.DEVNULL,
+                              timeout=TOOL_TIMEOUT_SECONDS, creationflags=process.window_flags())
+        by_line = dict(probes)
+        for line, bound in MEASURE_PATTERN.findall(done.stdout + done.stderr):
+            if int(line) in by_line:
+                found[by_line[int(line)]] = int(bound) - 1
+    except (OSError, subprocess.TimeoutExpired) as error:
+        found = {}
+        note = "the measurement could not run: %s" % error
+    else:
+        note = None if found else "gcc reported no measured value (the header may not compile)"
+    expected = _abi_expected(abi)
+    differs = {key: {"expected": value, "found": found.get(key)} for key, value in expected.items()
+               if key in found and found[key] != value}
+    unmeasured = sorted(key for key in expected if key not in found)
+    headers = [os.path.join(probe_cell.root, name) for name in probe_cell.contract_headers]
+    text = "; ".join("%s expected %s found %s" % (key, row["expected"], row["found"]) for key, row in sorted(differs.items()))
+    message = ("ABI mismatch of Cell %s: %s. The mirror %s disagrees with the C headers %s%s. Next step: correct "
+               "the layout or constant in the header, or update the mirror to the reviewed header layout and its "
+               "consumers together.\n%s"
+               % (probe_cell.name, text or "values not measurable", probe_cell.abi_path, ", ".join(headers),
+                  "" if not unmeasured else " (not measured: %s)" % ", ".join(unmeasured[:8]), failure))
+    return BuildError(message, {"abi_mismatch": {"cell": probe_cell.name, "mirror": probe_cell.abi_path,
+                                                 "headers": headers, "differs": differs,
+                                                 "unmeasured": unmeasured, "note": note}})
+
+
 def _probe_definitions(abi):
     defs = []
     for c_name, layout in abi.struct_layout().items():
@@ -383,7 +461,7 @@ def standard_include_root():
     try:
         return registry.standard_include_root(_settings())
     except RegistryError as error:
-        raise BuildError(str(error))
+        raise BuildError(str(error), error.details)
 
 
 def export_aliases(cell, settings=None):
@@ -746,6 +824,36 @@ def build_library(cell_name, run_id, sanitize=None, accept_tool_drift=False, obj
         os.mkdir(run_dir)
     except FileExistsError:
         raise BuildError("run directory already exists: %s" % run_dir)
+    try:
+        return _build_in_run(cell, linked, run_id, run_dir, sanitize, cache, cache_before, tools, probed, abis,
+                             functions, jobs)
+    except (BuildError, RegistryError) as error:
+        _write_failure_record(run_dir, run_id, cell, error, cache, cache_before, tools)
+        raise
+
+
+def _write_failure_record(run_dir, run_id, cell, error, cache, cache_before, tools):
+    """The build record of a failed run: the reason, its details (paths, expected and found values), the
+    Foundation identity when it was resolved, the tools and the cache counts. Writing it never hides the
+    original failure."""
+    record = {"run_id": run_id, "cell": cell.name, "result": "failed", "error": str(error),
+              "details": getattr(error, "details", {}), "maintainer_tools": tools}
+    try:
+        record["fnd_sdk_standard"] = registry.standard_record(registry._settings(None))
+    except Exception as note:  # unreadable metadata is a note in the record, never a second failure
+        record["fnd_sdk_standard"] = {"note": str(note)}
+    try:
+        record["object_cache"] = _cache_delta(cache_before, cache.statistics(REPO_ROOT))
+        with open(os.path.join(run_dir, "build_record.json"), "w", encoding="utf-8", newline="\n") as handle:
+            json.dump(record, handle, indent=2, sort_keys=True, default=str)
+            handle.write("\n")
+    except (OSError, TypeError, ValueError) as note:
+        sys.stderr.write("build: note: the failure record could not be written: %s\n" % note)
+
+
+def _build_in_run(cell, linked, run_id, run_dir, sanitize, cache, cache_before, tools, probed, abis, functions,
+                  jobs):
+    settings = _settings()
     tmp_dir = os.path.join(run_dir, "tmp")
     os.mkdir(tmp_dir)
     env = _child_env(tmp_dir)
@@ -773,8 +881,12 @@ def build_library(cell_name, run_id, sanitize=None, accept_tool_drift=False, obj
 
     def run_probe(job):
         probe_cell, probe_path, probe_includes, probe_flags = job
-        _run(probe_flags + ["-fsyntax-only"] + probe_includes + _probe_definitions(abis[probe_cell.name]) + [probe_path],
-             env, run_dir, "ABI probe of %s (mirror disagrees with the C header)" % probe_cell.name)
+        try:
+            _run(probe_flags + ["-fsyntax-only"] + probe_includes + _probe_definitions(abis[probe_cell.name])
+                 + [probe_path], env, run_dir, "ABI probe of %s (mirror disagrees with the C header)" % probe_cell.name)
+        except BuildError as failure:
+            raise _abi_mismatch(probe_cell, abis[probe_cell.name],
+                                probe_flags + ["-fsyntax-only"] + probe_includes, env, run_dir, failure)
         if msvc_paths is not None:
             # The ASan variant is compiled by cl: its layout is probed by cl too (/Zs: syntax only).
             response = _response_file(os.path.join(tmp_dir, os.path.basename(probe_path)[:-2] + ".msvc.rsp"),
@@ -897,8 +1009,13 @@ def build_library(cell_name, run_id, sanitize=None, accept_tool_drift=False, obj
 
     exported = _exported_names(library_path, env, run_dir)
     if sorted(exported) != sorted(functions):
-        raise BuildError("exported symbols differ from the headers: extra=%s missing=%s"
-                         % (sorted(set(exported) - set(functions)), sorted(set(functions) - set(exported))))
+        headers = [os.path.join(exported_cell.root, exported_cell.public_header) for exported_cell in cell.exported_cells()]
+        extra, missing = sorted(set(exported) - set(functions)), sorted(set(functions) - set(exported))
+        raise BuildError("exported symbols of %s differ from the public headers %s: extra=%s missing=%s. Next step: "
+                         "define every declared function in the Cell sources (missing) or declare it in the public "
+                         "header (extra)." % (library_path, ", ".join(headers), extra, missing),
+                         {"export_mismatch": {"library": library_path, "headers": headers, "extra": extra,
+                                              "missing": missing}})
 
     for tested in cell.tested_cells():
         if tested.test_fixture is not None and tested.name not in fixtures:
@@ -917,6 +1034,7 @@ def build_library(cell_name, run_id, sanitize=None, accept_tool_drift=False, obj
     record = {
         "run_id": run_id,
         "cell": cell.name,
+        "result": "passed",
         "compiler": msvc_paths["cl"] if msvc_paths is not None else GCC_PATH,
         "depends_on": [dependency.name for dependency in cell.dependency_closure()],
         "linked": [linked_cell.name for linked_cell in linked],
@@ -1034,6 +1152,8 @@ def main(argv):
             libraries.append((cell, built[library_cell]))
     except (BuildError, RegistryError) as error:
         sys.stderr.write("build: FAIL: %s\n" % error)
+        if getattr(error, "details", None):
+            sys.stderr.write("build: details: %s\n" % json.dumps(error.details, sort_keys=True, default=str))
         return 1
     for cell, library in libraries:
         print("%s_library: %s" % (cell.stem, library))
