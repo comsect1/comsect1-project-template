@@ -16,7 +16,8 @@ derived configuration lives in a task-owned scratch run that is moved through
                                       [--lane native|plain|both] [--accept-tool-drift]
 
 Output: `90_temps/verification/native_gate/<run-id>/` (see native_gate.py). The
-exit code is the one of native_gate.py (0 PASS); 2 for a usage or registry error.
+exit code is the one of native_gate.py (0 CONTINUE: no lane FAIL); 2 for a usage or
+registry error.
 """
 
 import argparse

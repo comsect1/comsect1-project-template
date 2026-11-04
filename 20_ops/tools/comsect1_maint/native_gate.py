@@ -42,13 +42,22 @@ source Cells of its external inputs (`--source-cell`) and the selected SDK
 publication roots (`--publication`), which needs a native-input that accepts
 them; when it is absent, external inputs are passed by id only.
 
+Only an established violation blocks. The Gate verdict fixes the handoff and the
+Gate exit: FAIL is BLOCK and exit 1; INDETERMINATE, REQ and WARN are
+CONTINUE_WITH_RISK and exit 0; PASS is CONTINUE and exit 0; an execution error
+writes no conclusion and exits 2. A lane proceeds if and only if the Gate exit
+is 0, the handoff is not BLOCK and `outcome_summary.violation_count` is 0; the
+assessment count, `assessment_blocked` and a verdict other than PASS never
+block. The report's `assessment` member (`reasons`, `missing_capabilities`,
+`unassessed_site_count`) is recorded in the lane and printed after its line.
+
 Exit codes (tool codes, not Gate codes; the Gate exit code is recorded in the
 summary). With `--lane both` the highest code of the lanes is returned.
 
-     0  PASS                 every selected lane has verdict PASS
-     1  FAIL                 a lane has Gate verdict FAIL
+     0  CONTINUE             no selected lane has Gate verdict FAIL (PASS, WARN, REQ, INDETERMINATE)
+     1  FAIL                 a lane has Gate verdict FAIL (handoff BLOCK)
      2  USAGE                invalid command line
-     3  INDETERMINATE        a lane has Gate verdict INDETERMINATE (blocked)
+        (3 is retired: INDETERMINATE no longer blocks)
      4  CONFIG               lane configuration unreadable or invalid, or maintainer tools drift
      5  TOOL_SET_UNAVAILABLE installed Gate set or a binary is absent
      7  CLANG_UNAVAILABLE    clang or its resource directory not usable
@@ -79,10 +88,9 @@ from . import path_guard as _path_guard
 from . import process
 from .process import is_link, sha256_file, sha256_text, write_text, write_json
 
-EXIT_PASS = 0
+EXIT_CONTINUE = 0
 EXIT_FAIL = 1
 EXIT_USAGE = 2
-EXIT_INDETERMINATE = 3
 EXIT_CONFIG = 4
 EXIT_TOOL_SET_UNAVAILABLE = 5
 EXIT_CLANG_UNAVAILABLE = 7
@@ -95,7 +103,7 @@ EXIT_TIMEOUT = 13
 EXIT_INTERNAL = 14
 
 EXIT_NAMES = {
-    0: "PASS", 1: "FAIL", 2: "USAGE", 3: "INDETERMINATE", 4: "CONFIG",
+    0: "CONTINUE", 1: "FAIL", 2: "USAGE", 4: "CONFIG",
     5: "TOOL_SET_UNAVAILABLE", 7: "CLANG_UNAVAILABLE",
     8: "CELL_INVALID", 9: "OUTPUT_INVALID", 10: "PLAN_FAILED",
     11: "NATIVE_INPUT_FAILED", 12: "GATE_REFUSED", 13: "TIMEOUT", 14: "INTERNAL",
@@ -115,6 +123,12 @@ CREATE_NO_WINDOW = process.CREATE_NO_WINDOW
 CREATE_NEW_PROCESS_GROUP = process.CREATE_NEW_PROCESS_GROUP
 REPO_ROOT = Path(process.REPO_ROOT)
 COUNT_NAMES = ("assessment_count", "debt_count", "limit_count", "notice_count", "rework_count", "violation_count")
+VERDICTS = ("PASS", "WARN", "REQ", "INDETERMINATE", "FAIL")
+# The Gate handoff and exit of each verdict; Gate exit 2 is an execution error without a conclusion.
+VERDICT_HANDOFF = {"PASS": "CONTINUE", "WARN": "CONTINUE_WITH_RISK", "REQ": "CONTINUE_WITH_RISK",
+                   "INDETERMINATE": "CONTINUE_WITH_RISK", "FAIL": "BLOCK"}
+VERDICT_GATE_EXIT = {verdict: 1 if verdict == "FAIL" else 0 for verdict in VERDICTS}
+ASSESSMENT_KEYS = {"reasons", "missing_capabilities", "unassessed_site_count"}
 
 
 class ToolError(Exception):
@@ -715,10 +729,25 @@ def report_constant(value):
     raise ValueError("non-finite Gate report constant: %s" % value)
 
 
+def assessment_summary(assessment):
+    """The report's `assessment` member, checked: finding counts by reason, missing capabilities, unassessed sites."""
+    if not (isinstance(assessment, dict) and set(assessment) == ASSESSMENT_KEYS
+            and isinstance(assessment["reasons"], dict)
+            and all(isinstance(k, str) and type(v) is int and v > 0 for k, v in assessment["reasons"].items())
+            and isinstance(assessment["missing_capabilities"], list)
+            and all(isinstance(item, str) for item in assessment["missing_capabilities"])
+            and type(assessment["unassessed_site_count"]) is int and assessment["unassessed_site_count"] >= 0):
+        raise ToolError(EXIT_GATE_REFUSED, "Gate report has an unexpected assessment member")
+    return {"reasons": dict(sorted(assessment["reasons"].items())),
+            "missing_capabilities": sorted(assessment["missing_capabilities"]),
+            "unassessed_site_count": assessment["unassessed_site_count"]}
+
+
 def read_report(report_path, gate_text, gate_code):
     """The lane result of one Gate report: unique keys, finite numbers, known verdict and handoff, the
-    finding count of the list, the outcome summary with every count, an exit code of the Gate set, and
-    a verdict that agrees with the exit code; a blocked assessment keeps BLOCK."""
+    finding count of the list, the outcome summary with every count, the assessment member, a
+    concluding Gate exit (0 or 1), and the handoff and exit of the verdict. Only FAIL blocks, and
+    exactly when a violation is established; an incomplete assessment never blocks."""
     if not report_path.is_file():
         raise ToolError(EXIT_GATE_REFUSED, "Gate wrote no report (exit %d): %s" % (gate_code, gate_text.strip()[:400]))
     try:
@@ -733,39 +762,37 @@ def read_report(report_path, gate_text, gate_code):
     if count != len(findings):
         raise ToolError(EXIT_GATE_REFUSED, "Gate finding count differs from the findings list")
     outcome = report.get("outcome_summary")
-    if not (verdict in ("PASS", "WARN", "REQ", "INDETERMINATE", "FAIL")
-            and handoff in ("CONTINUE", "CONTINUE_WITH_RISK", "BLOCK")
+    if not (verdict in VERDICTS and handoff in ("CONTINUE", "CONTINUE_WITH_RISK", "BLOCK")
             and count >= 0 and all(isinstance(f, dict) for f in findings)
             and isinstance(outcome, dict) and type(outcome.get("assessment_blocked")) is bool
             and all(type(outcome.get(k)) is int and 0 <= outcome[k] <= count for k in COUNT_NAMES)
-            and type(gate_code) is int and gate_code in (0, 1, 3, 4)):
+            and type(gate_code) is int and gate_code in (0, 1)):
         raise ToolError(EXIT_GATE_REFUSED, "Gate report has unexpected member types")
+    assessment = assessment_summary(report.get("assessment"))
     codes = {}
     for finding in findings:
         code = finding.get("code")
         codes[str(code)] = codes.get(str(code), 0) + 1
-    if verdict == "PASS" and (gate_code != 0 or count != 0):
-        raise ToolError(EXIT_GATE_REFUSED, "inconsistent Gate result: verdict PASS, exit %d, findings %d" % (gate_code, count))
-    if verdict == "PASS" and handoff != "CONTINUE":
-        raise ToolError(EXIT_GATE_REFUSED, "inconsistent Gate result: verdict PASS with handoff %s" % handoff)
-    if verdict == "PASS" and outcome["assessment_blocked"]:
-        raise ToolError(EXIT_GATE_REFUSED, "inconsistent Gate result: verdict PASS with a blocked assessment")
-    if verdict != "PASS" and gate_code == 0:
-        raise ToolError(EXIT_GATE_REFUSED, "inconsistent Gate result: verdict %s with exit 0" % verdict)
-    if (outcome["assessment_blocked"] or outcome["assessment_count"]) and (verdict not in ("INDETERMINATE", "FAIL") or handoff != "BLOCK"):
-        raise ToolError(EXIT_GATE_REFUSED, "incomplete assessment lost its blocking result")
+    if gate_code != VERDICT_GATE_EXIT[verdict]:
+        raise ToolError(EXIT_GATE_REFUSED, "inconsistent Gate result: verdict %s with exit %d" % (verdict, gate_code))
+    if handoff != VERDICT_HANDOFF[verdict]:
+        raise ToolError(EXIT_GATE_REFUSED, "inconsistent Gate result: verdict %s with handoff %s" % (verdict, handoff))
+    if (verdict == "FAIL") != (outcome["violation_count"] > 0):
+        raise ToolError(EXIT_GATE_REFUSED, "inconsistent Gate result: verdict %s with %d violations"
+                        % (verdict, outcome["violation_count"]))
+    if verdict == "PASS" and count != 0:
+        raise ToolError(EXIT_GATE_REFUSED, "inconsistent Gate result: verdict PASS with %d findings" % count)
     return {"verdict": verdict, "finding_count": count, "handoff": handoff, "gate_exit": gate_code,
             "finding_codes": dict(sorted(codes.items())), "outcome_summary": outcome,
-            "report_sha256": sha256_file(report_path)}
+            "assessment": assessment, "report_sha256": sha256_file(report_path)}
 
 
 def verdict_exit(verdict):
-    if verdict == "PASS":
-        return EXIT_PASS
+    """The tool code of a lane verdict: only FAIL blocks; WARN, REQ and INDETERMINATE continue."""
     if verdict == "FAIL":
         return EXIT_FAIL
-    if verdict == "INDETERMINATE":
-        return EXIT_INDETERMINATE
+    if verdict in VERDICTS:
+        return EXIT_CONTINUE
     raise ToolError(EXIT_GATE_REFUSED, "unknown Gate verdict %r" % verdict)
 
 
@@ -880,8 +907,14 @@ def lane_line(name, result):
     if "error" in result:
         return "%s: ERROR class=%s code=%d %s" % (name, EXIT_NAMES[result["exit"]], result["exit"], result["error"])
     codes = ",".join("%s:%d" % item for item in result["finding_codes"].items()) or "-"
-    return "%s: verdict=%s findings=%d handoff=%s gate_exit=%d codes=%s" % (
-        name, result["verdict"], result["finding_count"], result["handoff"], result["gate_exit"], codes)
+    assessment = result["assessment"]
+    reasons = ",".join("%s:%d" % item for item in assessment["reasons"].items()) or "-"
+    missing = ",".join(assessment["missing_capabilities"]) or "-"
+    return ("%s: verdict=%s findings=%d handoff=%s gate_exit=%d violations=%d codes=%s\n"
+            "%s: assessment unassessed_sites=%d reasons=%s missing_capabilities=%s") % (
+        name, result["verdict"], result["finding_count"], result["handoff"], result["gate_exit"],
+        result["outcome_summary"]["violation_count"], codes,
+        name, assessment["unassessed_site_count"], reasons, missing)
 
 
 # ---------------------------------------------------------------- main
@@ -923,7 +956,7 @@ def run(arguments):
         if clang is not None and manifest_mode:
             write_json(run_dir / "toolchain_provenance.json", config["_native_toolchain_manifest"])
         lanes = ("native", "plain") if arguments.lane == "both" else (arguments.lane,)
-        results, code = {}, EXIT_PASS
+        results, code = {}, EXIT_CONTINUE
         for lane in lanes:
             try:
                 if lane == "native":
